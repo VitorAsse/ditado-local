@@ -1,7 +1,7 @@
 customtkinter==6.0.0
 ctranslate2==4.4.0
 faster-whisper==1.2.1
-numpy==2.4.6
+numpy==2.5.1
 Pillow==12.3.0
 pycaw==20251023
 pynput==1.8.2
