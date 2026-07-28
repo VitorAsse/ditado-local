@@ -13,9 +13,23 @@ LOADER = importlib.machinery.SourceFileLoader("ditado_local", str(APP_PATH))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 DITADO_LOCAL = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(DITADO_LOCAL)
-from ditado_ai import OllamaClient, correction_prompt, select_voice_skill
+from ditado_ai import (
+    OllamaClient,
+    correction_prompt,
+    normalize_agent_conversation,
+    select_voice_skill,
+)
 import ditado_storage
-from ditado_storage import AppConfig
+from ditado_storage import AppConfig, HistoryStore
+
+
+def destroy_test_root(root):
+    for callback_id in root.tk.call("after", "info"):
+        try:
+            root.after_cancel(callback_id)
+        except Exception:
+            pass
+    root.destroy()
 
 
 class TranscriptionProfileTests(unittest.TestCase):
@@ -411,6 +425,432 @@ class VoiceSkillRoutingTests(unittest.TestCase):
                 skills=[],
                 selected_skill=None,
             )
+
+
+class AgentConversationTests(unittest.TestCase):
+    def test_agent_result_overlay_opens_chat_when_action_is_clicked(self):
+        root = DITADO_LOCAL.ctk.CTk()
+        root.geometry("1x1+20+20")
+        root.overrideredirect(True)
+        action = Mock()
+        overlay = DITADO_LOCAL.FloatingOverlay(root)
+        try:
+            overlay.show(
+                "success",
+                "Resultado pronto",
+                "Clique para continuar por texto",
+                "#4ADE80",
+                action_label="Continuar no chat",
+                on_action=action,
+            )
+            root.update()
+            overlay.canvas.event_generate("<Motion>", x=346, y=53)
+            root.update()
+            overlay.canvas.event_generate("<Button-1>", x=346, y=53)
+            root.update()
+
+            action.assert_called_once_with()
+            self.assertFalse(overlay.visible)
+        finally:
+            try:
+                overlay.hide()
+            except Exception:
+                pass
+            destroy_test_root(root)
+
+    def test_agent_chat_is_viewable_when_main_window_is_hidden(self):
+        root = DITADO_LOCAL.ctk.CTk()
+        root.withdraw()
+        conversation = {
+            "version": 1,
+            "original_text": "Texto",
+            "system_prompt": "Transforme o texto.",
+            "rules_context": "",
+            "messages": [
+                {"role": "user", "content": "Resuma"},
+                {"role": "assistant", "content": "Resumo"},
+            ],
+        }
+        chat = DITADO_LOCAL.AgentChatWindow(
+            root,
+            conversation,
+            on_send=lambda _instruction: None,
+            on_copy=lambda _text: None,
+        )
+        try:
+            root.update()
+            self.assertTrue(chat.window.winfo_viewable())
+        finally:
+            chat.close()
+            destroy_test_root(root)
+
+    def test_agent_chat_sends_the_typed_follow_up(self):
+        root = DITADO_LOCAL.ctk.CTk()
+        root.withdraw()
+        on_send = Mock()
+        conversation = {
+            "version": 1,
+            "original_text": "Texto",
+            "system_prompt": "Transforme o texto.",
+            "rules_context": "",
+            "messages": [
+                {"role": "user", "content": "Resuma"},
+                {"role": "assistant", "content": "Resumo"},
+            ],
+        }
+        chat = DITADO_LOCAL.AgentChatWindow(
+            root,
+            conversation,
+            on_send=on_send,
+            on_copy=lambda _text: None,
+        )
+        try:
+            chat.input.insert("1.0", "Deixe mais direto.")
+            chat.submit()
+
+            on_send.assert_called_once_with("Deixe mais direto.")
+            self.assertTrue(chat.loading)
+        finally:
+            chat.close()
+            destroy_test_root(root)
+
+    def test_left_control_and_alt_start_and_stop_global_agent_recording(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.suppress_hotkeys_until = 0.0
+        app.keys_down = set()
+        app.dictation_chord_active = False
+        app.agent_chord_active = False
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.ctrl_l)
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.alt_l)
+        start_event = app.events.get()
+        app._on_key_release(DITADO_LOCAL.pynput_keyboard.Key.alt_l)
+        stop_event = app.events.get()
+
+        self.assertEqual(("start", "agent"), start_event)
+        self.assertEqual(("stop", None), stop_event)
+
+    def test_latest_agent_conversation_ignores_newer_non_agent_entries(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            history_path = Path(temporary_directory) / "history.enc"
+            with (
+                patch.object(ditado_storage, "HISTORY_PATH", history_path),
+                patch.object(
+                    ditado_storage,
+                    "protect_for_current_user",
+                    side_effect=lambda value: value,
+                ),
+                patch.object(
+                    ditado_storage,
+                    "unprotect_for_current_user",
+                    side_effect=lambda value: value,
+                ),
+            ):
+                history = HistoryStore()
+                conversation = {
+                    "version": 1,
+                    "original_text": "Texto original",
+                    "system_prompt": "Transforme o texto.",
+                    "messages": [
+                        {"role": "user", "content": "Resuma"},
+                        {"role": "assistant", "content": "Resumo"},
+                    ],
+                }
+                entry_id = history.add(
+                    "Resumo",
+                    "agent",
+                    conversation=conversation,
+                )
+                history.add("Texto copiado depois", "clipboard")
+
+                latest = history.latest_agent_conversation()
+
+        self.assertEqual(entry_id, latest["id"])
+        self.assertEqual("Resumo", latest["text"])
+        self.assertEqual(conversation, latest["conversation"])
+
+    def test_agent_hotkey_without_selection_requires_a_new_text_selection(self):
+        config = Mock()
+        config.get.side_effect = lambda key, default=None: {
+            "corrections": [],
+            "transcription_profile": "balanced",
+            "transcription_language": "auto",
+        }.get(key, default)
+        config.get_rules.return_value = []
+        config.get_skills.return_value = []
+
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.config = config
+        app.model = Mock()
+        app.model.transcribe.return_value = (
+            [type("Segment", (), {"text": "Deixe mais direto."})()],
+            None,
+        )
+        app._ensure_whisper_model = Mock()
+        app._resample_to_16khz = Mock(
+            side_effect=lambda audio: audio
+        )
+        app.agent_selected_text = ""
+        app.selection_ready = DITADO_LOCAL.threading.Event()
+        app.selection_ready.set()
+        app.ollama = Mock()
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+
+        app._transcribe_and_process(
+            DITADO_LOCAL.np.ones(8, dtype=DITADO_LOCAL.np.float32),
+            "agent",
+        )
+
+        events = []
+        while not app.events.empty():
+            events.append(app.events.get())
+        error_message = next(
+            payload for event, payload in events if event == "error"
+        )
+
+        app.ollama.continue_selected_text_conversation.assert_not_called()
+        self.assertEqual(
+            "Selecione um texto para iniciar uma conversa com o agente.",
+            error_message,
+        )
+
+    def test_follow_up_keeps_the_original_text_and_ordered_turns(self):
+        client = OllamaClient()
+        client.chat = Mock(return_value="Resumo inicial.")
+
+        first_result, conversation = client.start_selected_text_conversation(
+            "Texto original com fatos importantes.",
+            "Resuma em um parágrafo.",
+            skills=[],
+            selected_skill=None,
+            rules=[],
+        )
+
+        client.chat_messages = Mock(return_value="Resumo ainda mais curto.")
+        result, updated = client.continue_selected_text_conversation(
+            conversation,
+            "Deixe ainda mais curto.",
+        )
+
+        self.assertEqual("Resumo inicial.", first_result)
+        self.assertEqual("Resumo ainda mais curto.", result)
+        messages = client.chat_messages.call_args.args[0]
+        self.assertEqual(
+            ["system", "user", "assistant", "user"],
+            [message["role"] for message in messages],
+        )
+        self.assertIn("Texto original com fatos importantes.", messages[1]["content"])
+        self.assertIn("Resuma em um parágrafo.", messages[1]["content"])
+        self.assertEqual("Resumo inicial.", messages[2]["content"])
+        self.assertEqual("Deixe ainda mais curto.", messages[3]["content"])
+        self.assertEqual(
+            ["user", "assistant", "user", "assistant"],
+            [message["role"] for message in updated["messages"]],
+        )
+
+    def test_invalid_or_oversized_saved_conversation_is_not_resumed(self):
+        self.assertIsNone(
+            normalize_agent_conversation(
+                {
+                    "version": 1,
+                    "original_text": "Texto",
+                    "system_prompt": "Instruções",
+                    "messages": [
+                        {"role": "assistant", "content": "Ordem inválida"},
+                    ],
+                }
+            )
+        )
+        self.assertIsNone(
+            normalize_agent_conversation(
+                {
+                    "version": 1,
+                    "original_text": "x" * 40_000,
+                    "system_prompt": "Instruções",
+                    "messages": [
+                        {"role": "user", "content": "Resuma"},
+                        {"role": "assistant", "content": "Resumo"},
+                    ],
+                }
+            )
+        )
+
+    def test_history_updates_one_conversation_without_merging_another(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            history_path = Path(temporary_directory) / "history.enc"
+            with (
+                patch.object(ditado_storage, "HISTORY_PATH", history_path),
+                patch.object(
+                    ditado_storage,
+                    "protect_for_current_user",
+                    side_effect=lambda value: value,
+                ),
+                patch.object(
+                    ditado_storage,
+                    "unprotect_for_current_user",
+                    side_effect=lambda value: value,
+                ),
+            ):
+                history = HistoryStore()
+                first_id = history.add(
+                    "Primeira resposta",
+                    "agent",
+                    conversation={
+                        "version": 1,
+                        "original_text": "Primeiro texto",
+                        "system_prompt": "Transforme o texto.",
+                        "messages": [
+                            {"role": "user", "content": "Resuma"},
+                            {"role": "assistant", "content": "Primeira resposta"},
+                        ],
+                    },
+                )
+                second_id = history.add(
+                    "Outra resposta",
+                    "agent",
+                    conversation={
+                        "version": 1,
+                        "original_text": "Segundo texto",
+                        "system_prompt": "Transforme o texto.",
+                        "messages": [
+                            {"role": "user", "content": "Traduza"},
+                            {"role": "assistant", "content": "Outra resposta"},
+                        ],
+                    },
+                )
+
+                updated = history.update_conversation(
+                    first_id,
+                    "Resposta refinada",
+                    {
+                        "version": 1,
+                        "original_text": "Primeiro texto",
+                        "system_prompt": "Transforme o texto.",
+                        "messages": [
+                            {"role": "user", "content": "Resuma"},
+                            {"role": "assistant", "content": "Primeira resposta"},
+                            {"role": "user", "content": "Encurte"},
+                            {"role": "assistant", "content": "Resposta refinada"},
+                        ],
+                    },
+                )
+                reloaded = HistoryStore()
+
+        self.assertTrue(updated)
+        entries_by_id = {entry["id"]: entry for entry in reloaded.all()}
+        self.assertEqual("Resposta refinada", entries_by_id[first_id]["text"])
+        self.assertEqual(
+            4,
+            len(entries_by_id[first_id]["conversation"]["messages"]),
+        )
+        self.assertEqual("Outra resposta", entries_by_id[second_id]["text"])
+
+    def test_continue_action_requires_a_valid_agent_conversation(self):
+        valid_entry = {
+            "source": "agent",
+            "conversation": {
+                "version": 1,
+                "original_text": "Texto",
+                "system_prompt": "Transforme o texto.",
+                "messages": [
+                    {"role": "user", "content": "Resuma"},
+                    {"role": "assistant", "content": "Resumo"},
+                ],
+            },
+        }
+
+        self.assertTrue(DITADO_LOCAL.can_continue_agent_conversation(valid_entry))
+        self.assertFalse(
+            DITADO_LOCAL.can_continue_agent_conversation(
+                {"source": "transcription", "conversation": valid_entry["conversation"]}
+            )
+        )
+        self.assertFalse(
+            DITADO_LOCAL.can_continue_agent_conversation(
+                {"source": "agent", "conversation": None}
+            )
+        )
+
+    def test_agent_result_is_saved_with_its_conversation_context(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.processing = True
+        app.status = Mock()
+        app.backend_text = Mock()
+        app.model_backend = "Whisper"
+        app.status_dot = Mock()
+        app.ready_badge = Mock()
+        app.overlay = Mock()
+        app.root = Mock()
+        app._copy_text = Mock()
+        app._copy_text.return_value = "agent-entry"
+        app._open_latest_agent_chat = Mock()
+        app._restore_target_window = Mock()
+        app._paste_into_active_app = Mock()
+        conversation = {
+            "version": 1,
+            "original_text": "Texto",
+            "system_prompt": "Transforme o texto.",
+            "rules_context": "",
+            "messages": [
+                {"role": "user", "content": "Resuma"},
+                {"role": "assistant", "content": "Resumo"},
+            ],
+        }
+
+        app._finish_result(("Resumo", 1.2, "agent", conversation))
+
+        app._copy_text.assert_called_once_with(
+            "Resumo",
+            "agent",
+            conversation=conversation,
+        )
+        self.assertFalse(app.processing)
+        app.overlay.show.assert_called_once_with(
+            "success",
+            "Resultado pronto",
+            "Clique para continuar por texto",
+            "#4ADE80",
+            action_label="Continuar no chat",
+            on_action=app._open_latest_agent_chat,
+        )
+
+    def test_tray_action_opens_latest_agent_conversation_without_main_window(self):
+        entry = {
+            "id": "agent-entry",
+            "source": "agent",
+            "text": "Resumo",
+            "conversation": {
+                "version": 1,
+                "original_text": "Texto",
+                "system_prompt": "Transforme o texto.",
+                "rules_context": "",
+                "messages": [
+                    {"role": "user", "content": "Resuma"},
+                    {"role": "assistant", "content": "Resumo"},
+                ],
+            },
+        }
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.history = Mock()
+        app.history.latest_agent_conversation.return_value = entry
+        app._open_agent_chat = Mock()
+        app._show_main_window = Mock()
+
+        app._open_latest_agent_chat()
+
+        app._open_agent_chat.assert_called_once_with(entry)
+        app._show_main_window.assert_not_called()
+
+    def test_copying_a_history_result_does_not_rewrite_the_history_entry(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app._copy_to_clipboard = Mock()
+        app.status = Mock()
+
+        app._copy_history_item("Resposta refinada")
+
+        app._copy_to_clipboard.assert_called_once_with("Resposta refinada")
+        app.status.set.assert_called_once_with("Item do histórico copiado.")
 
 
 if __name__ == "__main__":

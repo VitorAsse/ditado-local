@@ -33,6 +33,14 @@ instalação ou primeira execução.
 | sounddevice | 0.5.5 | MIT |
 | soxr | 1.1.0 | LGPL-2.1-or-later |
 
+## Fonte incorporada
+
+| Projeto | Uso | Licença |
+| --- | --- | --- |
+| [DM Sans](https://github.com/google/fonts/tree/main/ofl/dmsans) | Tipografia da interface | SIL Open Font License 1.1 |
+
+O texto integral da licença acompanha a fonte em `assets/fonts/OFL.txt`.
+
 Dependências transitivas são instaladas pelo `pip` e também mantêm suas próprias
 licenças. Use o metadata do ambiente instalado para obter a lista exata correspondente
 à plataforma.
