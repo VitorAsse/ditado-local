@@ -1,5 +1,5 @@
 customtkinter==6.0.0
-ctranslate2==4.4.0
+ctranslate2==4.8.1
 faster-whisper==1.2.1
 numpy==2.4.6
 Pillow==12.3.0
