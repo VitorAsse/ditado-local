@@ -13,6 +13,7 @@ Faster Whisper e Ollama.
 - Cadastre correções de grafia para nomes, marcas e termos técnicos.
 - Crie regras permanentes para preferências que devem valer em todas as ações.
 - Crie skills acionadas por nome ou frase para fluxos específicos.
+- Continue respostas do agente em um mini chat aberto pela aba `Histórico`.
 - Use CPU automaticamente quando a aceleração por GPU não estiver disponível.
 - Mantenha um histórico local protegido pela conta atual do Windows.
 
@@ -68,6 +69,17 @@ O instalador cria um ambiente Python isolado em
 2. Segure apenas `Ctrl esquerdo + Alt esquerdo`.
 3. Diga algo como `deixe mais curto` ou `transforme em uma lista`.
 4. Solte uma das teclas.
+5. Quando a primeira resposta ficar pronta, clique em `Continuar no chat` no overlay.
+6. Digite os próximos ajustes no mini chat e use `Ctrl + Enter` ou `Enviar ajuste`.
+7. Clique em `Copiar resposta` quando estiver satisfeito.
+
+O atalho por voz sempre começa uma conversa a partir de um texto selecionado. A
+continuação acontece por texto no mini chat. Se o overlay já tiver desaparecido, use
+`Histórico` > `Continuar` ou a opção `Conversar com o agente` na bandeja. O mini chat
+não cola automaticamente uma nova versão em outro aplicativo.
+
+Para abrir somente o mini chat sem mostrar a janela principal, clique com o botão
+direito no ícone do Ditado Local na bandeja e escolha `Conversar com o agente`.
 
 ### Regras permanentes
 
@@ -81,11 +93,13 @@ Exemplos:
 - `Mantenha um tom direto e evite linguagem promocional.`
 
 As regras ficam somente no `config.json` do usuário e não fazem parte do código.
+Use regras apenas para preferências que devem valer em todas as conversas.
 
 ### Skills
 
 Skills são comportamentos ativados por nome ou frase. Use quando uma regra não deve
 ser aplicada o tempo todo, como formatação de resumo semanal ou resposta profissional.
+Sem um gatilho correspondente, nenhuma skill é adicionada ao agente generalista.
 
 ## Idiomas
 
@@ -96,7 +110,9 @@ idioma por configuração manual.
 ## Privacidade
 
 - O áudio é transcrito localmente.
-- O texto enviado ao agente usa o endpoint local do Ollama por padrão.
+- O texto e os turnos enviados ao agente usam o endpoint local do Ollama por padrão.
+- Ao continuar uma conversa, o texto original e as respostas anteriores são reenviados
+  ao mesmo endpoint para manter o contexto.
 - O histórico é criptografado com a proteção de dados da conta atual do Windows.
 - A captura de textos copiados por outros aplicativos começa desativada.
 - Não existe telemetria no aplicativo.
@@ -143,7 +159,7 @@ py -3.11 -m venv .venv
 Para montar o arquivo de uma Release:
 
 ```powershell
-powershell -File .\scripts\package-release.ps1 -Version 0.1.0
+powershell -File .\scripts\package-release.ps1 -Version 0.2.0
 ```
 
 ## Licença

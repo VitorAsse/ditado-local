@@ -352,26 +352,62 @@ class HistoryStore:
             encrypted = protect_for_current_user(payload)
             atomic_write_text(HISTORY_PATH, base64.b64encode(encrypted).decode("ascii"))
 
-    def add(self, text, source):
+    def add(self, text, source, conversation=None):
         if not isinstance(text, str):
-            return False
+            return None
         normalized = text.strip()
         if not normalized:
-            return False
+            return None
         with self.lock:
             if self.entries and self.entries[0].get("text") == normalized:
-                self.entries[0]["timestamp"] = datetime.now().isoformat(timespec="seconds")
-                self.entries[0]["source"] = source
+                entry = self.entries[0]
+                entry["timestamp"] = datetime.now().isoformat(timespec="seconds")
+                entry["source"] = source
             else:
-                self.entries.insert(
-                    0,
-                    {
-                        "id": str(uuid.uuid4()),
-                        "text": normalized,
-                        "source": source,
-                        "timestamp": datetime.now().isoformat(timespec="seconds"),
-                    },
+                entry = {
+                    "id": str(uuid.uuid4()),
+                    "text": normalized,
+                    "source": source,
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                }
+                self.entries.insert(0, entry)
+            if isinstance(conversation, dict):
+                entry["conversation"] = json.loads(
+                    json.dumps(conversation, ensure_ascii=False)
                 )
+            else:
+                entry.pop("conversation", None)
+            self.entries = self.entries[: self.limit]
+            self.save()
+        return entry["id"]
+
+    def update_conversation(self, entry_id, text, conversation):
+        if (
+            not isinstance(entry_id, str)
+            or not entry_id
+            or not isinstance(text, str)
+            or not text.strip()
+            or not isinstance(conversation, dict)
+        ):
+            return False
+        with self.lock:
+            entry = next(
+                (
+                    item
+                    for item in self.entries
+                    if isinstance(item, dict) and item.get("id") == entry_id
+                ),
+                None,
+            )
+            if entry is None or entry.get("source") != "agent":
+                return False
+            entry["text"] = text.strip()
+            entry["conversation"] = json.loads(
+                json.dumps(conversation, ensure_ascii=False)
+            )
+            entry["timestamp"] = datetime.now().isoformat(timespec="seconds")
+            self.entries.remove(entry)
+            self.entries.insert(0, entry)
             self.entries = self.entries[: self.limit]
             self.save()
         return True
@@ -391,3 +427,15 @@ class HistoryStore:
                 if entry.get("source") in {"transcription", "agent"}:
                     return entry.get("text", "")
         return ""
+
+    def latest_agent_conversation(self):
+        with self.lock:
+            for entry in self.entries:
+                if (
+                    entry.get("source") == "agent"
+                    and isinstance(entry.get("conversation"), dict)
+                ):
+                    return json.loads(
+                        json.dumps(entry, ensure_ascii=False)
+                    )
+        return None

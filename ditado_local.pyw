@@ -56,15 +56,23 @@ from ditado_ai import (
     OllamaClient,
     apply_custom_corrections,
     correction_prompt,
+    normalize_agent_conversation,
     select_voice_skill,
 )
 from ditado_audio import PlaybackMuteController
+from ditado_chat import AgentChatWindow
 from ditado_storage import AppConfig, HistoryStore
+from ditado_theme import (
+    APP_COLORS,
+    app_font,
+    get_app_font_family,
+    initialize_app_font,
+)
 
 
 SAMPLE_RATE = 16_000
-OVERLAY_WIDTH = 380
-OVERLAY_HEIGHT = 92
+OVERLAY_WIDTH = 440
+OVERLAY_HEIGHT = 104
 INSTANCE_NAMESPACE = "".join(
     character
     if character.isalnum() or character in {"_", "-"}
@@ -132,6 +140,14 @@ def resolve_transcription_language(language_name):
     )["code"]
 
 
+def can_continue_agent_conversation(entry):
+    return (
+        isinstance(entry, dict)
+        and entry.get("source") == "agent"
+        and normalize_agent_conversation(entry.get("conversation")) is not None
+    )
+
+
 def ensure_single_instance():
     show_event = ctypes.windll.kernel32.CreateEventW(
         None,
@@ -176,17 +192,31 @@ class FloatingOverlay:
             OVERLAY_WIDTH - 2,
             OVERLAY_HEIGHT - 2,
             24,
-            fill="#15151B",
-            outline="#30303A",
+            fill=APP_COLORS["surface_deep"],
+            outline=APP_COLORS["border"],
             width=1,
         )
-        self.canvas.create_oval(18, 19, 72, 73, fill="#24242D", outline="")
+        self.canvas.create_oval(
+            18,
+            19,
+            72,
+            73,
+            fill=APP_COLORS["surface_muted"],
+            outline="",
+        )
 
         self.bar_ids = []
         for index in range(7):
             x = 29 + index * 5
             self.bar_ids.append(
-                self.canvas.create_rectangle(x, 41, x + 3, 51, fill="#9B87F5", outline="")
+                self.canvas.create_rectangle(
+                    x,
+                    41,
+                    x + 3,
+                    51,
+                    fill=APP_COLORS["primary"],
+                    outline="",
+                )
             )
 
         self.title_id = self.canvas.create_text(
@@ -194,18 +224,62 @@ class FloatingOverlay:
             33,
             anchor="w",
             text="Ouvindo...",
-            fill="#FFFFFF",
-            font=("Segoe UI", 12, "bold"),
+            fill=APP_COLORS["text_strong"],
+            font=(get_app_font_family(), 12, "bold"),
         )
         self.subtitle_id = self.canvas.create_text(
             92,
             58,
             anchor="w",
             text="Solte para transcrever",
-            fill="#A6A6B3",
-            font=("Segoe UI", 9),
+            fill=APP_COLORS["text_muted"],
+            font=(get_app_font_family(), 9),
         )
-        self.dot_id = self.canvas.create_oval(348, 41, 359, 52, fill="#9B87F5", outline="")
+        self.dot_id = self.canvas.create_oval(
+            402,
+            47,
+            413,
+            58,
+            fill=APP_COLORS["primary"],
+            outline="",
+        )
+        self.action_background_id = self._rounded_rectangle(
+            274,
+            31,
+            418,
+            75,
+            14,
+            fill=APP_COLORS["accent"],
+            outline=APP_COLORS["accent_hover"],
+            width=1,
+            state="hidden",
+            tags=("overlay_action",),
+        )
+        self.action_text_id = self.canvas.create_text(
+            346,
+            53,
+            text="Continuar no chat",
+            fill=APP_COLORS["text_strong"],
+            font=(get_app_font_family(), 9, "bold"),
+            state="hidden",
+            tags=("overlay_action",),
+        )
+        self.canvas.tag_bind(
+            "overlay_action",
+            "<Button-1>",
+            self._run_action,
+        )
+        self.canvas.tag_bind(
+            "overlay_action",
+            "<Enter>",
+            lambda _event: self.canvas.configure(cursor="hand2"),
+        )
+        self.canvas.tag_bind(
+            "overlay_action",
+            "<Leave>",
+            lambda _event: self.canvas.configure(cursor=""),
+        )
+        self.on_action = None
         self.state = "hidden"
         self.level = 0.0
         self.phase = 0.0
@@ -251,23 +325,66 @@ class FloatingOverlay:
         except Exception:
             pass
 
-    def show(self, state, title, subtitle, color):
+    def show(
+        self,
+        state,
+        title,
+        subtitle,
+        color,
+        action_label=None,
+        on_action=None,
+    ):
         self.state = state
         self.canvas.itemconfigure(self.title_id, text=title)
         self.canvas.itemconfigure(self.subtitle_id, text=subtitle)
         self.canvas.itemconfigure(self.dot_id, fill=color)
         for bar in self.bar_ids:
             self.canvas.itemconfigure(bar, fill=color)
+        self.on_action = on_action if callable(on_action) else None
+        has_action = bool(action_label and self.on_action)
+        self.canvas.itemconfigure(
+            self.action_background_id,
+            state="normal" if has_action else "hidden",
+        )
+        self.canvas.itemconfigure(
+            self.action_text_id,
+            text=action_label or "",
+            state="normal" if has_action else "hidden",
+        )
+        self.canvas.itemconfigure(
+            self.dot_id,
+            state="hidden" if has_action else "normal",
+        )
+        self.canvas.itemconfigure(
+            self.title_id,
+            width=170 if has_action else 300,
+        )
+        self.canvas.itemconfigure(
+            self.subtitle_id,
+            width=170 if has_action else 300,
+        )
         if not self.visible:
             self.visible = True
             self._position()
             self.window.deiconify()
             self.window.lift()
 
+    def _run_action(self, _event=None):
+        action = self.on_action
+        if not action:
+            return
+        self.hide()
+        self.root.after(0, action)
+
     def hide(self):
         self.visible = False
         self.state = "hidden"
         self.level = 0.0
+        self.on_action = None
+        self.canvas.itemconfigure(self.action_background_id, state="hidden")
+        self.canvas.itemconfigure(self.action_text_id, state="hidden")
+        self.canvas.itemconfigure(self.dot_id, state="normal")
+        self.canvas.configure(cursor="")
         self.window.withdraw()
 
     def set_level(self, level):
@@ -297,6 +414,7 @@ class DitadoLocalApp:
     def __init__(self):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
+        initialize_app_font()
 
         self.start_hidden = "--background" in sys.argv
         self.config = AppConfig()
@@ -308,7 +426,7 @@ class DitadoLocalApp:
         self.root.title("Ditado local")
         self.root.geometry("790x770")
         self.root.minsize(740, 690)
-        self.root.configure(fg_color="#09090D")
+        self.root.configure(fg_color=APP_COLORS["background"])
 
         self.events = queue.SimpleQueue()
         self.model_lock = threading.Lock()
@@ -339,6 +457,8 @@ class DitadoLocalApp:
         self.keys_down = set()
         self.dictation_chord_active = False
         self.agent_chord_active = False
+        self.agent_chat_window = None
+        self.agent_chat_entry_id = None
         self.suppress_hotkeys_until = 0.0
         self.ignore_clipboard_until = 0.0
         self.history_dirty = True
@@ -418,23 +538,23 @@ class DitadoLocalApp:
             width=48,
             height=48,
             corner_radius=16,
-            fg_color="#7C5CFC",
-            text_color="#FFFFFF",
-            font=ctk.CTkFont(size=18, weight="bold"),
+            fg_color=APP_COLORS["accent"],
+            text_color=APP_COLORS["text_strong"],
+            font=app_font(size=18, weight="bold"),
         ).pack(side="left")
         title_group = ctk.CTkFrame(header, fg_color="transparent")
         title_group.pack(side="left", padx=14)
         ctk.CTkLabel(
             title_group,
             text="Ditado local",
-            text_color="#FFFFFF",
-            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=APP_COLORS["text_strong"],
+            font=app_font(size=22, weight="bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_group,
             text="Ditado, revisão e ações por voz no Windows",
-            text_color="#9898A6",
-            font=ctk.CTkFont(size=12),
+            text_color=APP_COLORS["text_muted"],
+            font=app_font(size=12),
         ).pack(anchor="w", pady=(2, 0))
         self.ready_badge = ctk.CTkLabel(
             header,
@@ -442,22 +562,22 @@ class DitadoLocalApp:
             width=104,
             height=30,
             corner_radius=15,
-            fg_color="#25232D",
-            text_color="#C9C3FF",
-            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=APP_COLORS["primary_tint"],
+            text_color=APP_COLORS["primary"],
+            font=app_font(size=10, weight="bold"),
         )
         self.ready_badge.pack(side="right")
 
         self.tabs = ctk.CTkTabview(
             shell,
-            fg_color="#111116",
-            segmented_button_fg_color="#18181F",
-            segmented_button_selected_color="#6F52E5",
-            segmented_button_selected_hover_color="#7C5CFC",
-            segmented_button_unselected_color="#18181F",
-            segmented_button_unselected_hover_color="#25252E",
+            fg_color=APP_COLORS["surface_deep"],
+            segmented_button_fg_color=APP_COLORS["surface_muted"],
+            segmented_button_selected_color=APP_COLORS["primary"],
+            segmented_button_selected_hover_color=APP_COLORS["primary_hover"],
+            segmented_button_unselected_color=APP_COLORS["surface_muted"],
+            segmented_button_unselected_hover_color=APP_COLORS["surface_hover"],
             border_width=1,
-            border_color="#24242D",
+            border_color=APP_COLORS["border"],
             corner_radius=20,
         )
         self.tabs.pack(fill="both", expand=True, pady=(20, 14))
@@ -478,7 +598,13 @@ class DitadoLocalApp:
         self._build_rules_tab(self.tabs.tab("Regras"))
         self._build_skills_tab(self.tabs.tab("Skills"))
 
-        status_card = ctk.CTkFrame(shell, fg_color="#101014", corner_radius=15)
+        status_card = ctk.CTkFrame(
+            shell,
+            fg_color=APP_COLORS["surface_deep"],
+            corner_radius=15,
+            border_width=1,
+            border_color=APP_COLORS["border"],
+        )
         status_card.pack(fill="x")
         status_inner = ctk.CTkFrame(status_card, fg_color="transparent")
         status_inner.pack(fill="x", padx=16, pady=12)
@@ -486,8 +612,8 @@ class DitadoLocalApp:
             status_inner,
             text="●",
             width=18,
-            text_color="#9B87F5",
-            font=ctk.CTkFont(size=13),
+            text_color=APP_COLORS["primary"],
+            font=app_font(size=13),
         )
         self.status_dot.pack(side="left")
         status_group = ctk.CTkFrame(status_inner, fg_color="transparent")
@@ -495,14 +621,14 @@ class DitadoLocalApp:
         ctk.CTkLabel(
             status_group,
             textvariable=self.status,
-            text_color="#E8E8EE",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=APP_COLORS["text"],
+            font=app_font(size=11, weight="bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
             status_group,
             textvariable=self.backend_text,
-            text_color="#81818E",
-            font=ctk.CTkFont(size=10),
+            text_color=APP_COLORS["text_subtle"],
+            font=app_font(size=10),
         ).pack(anchor="w", pady=(2, 0))
         ctk.CTkButton(
             status_inner,
@@ -535,7 +661,7 @@ class DitadoLocalApp:
             hotkey_group,
             text="SEGURE PARA DITAR",
             text_color="#8F8F9D",
-            font=ctk.CTkFont(size=10, weight="bold"),
+            font=app_font(size=10, weight="bold"),
         ).pack(anchor="w")
         hotkey = ctk.CTkFrame(hotkey_group, fg_color="transparent")
         hotkey.pack(anchor="w", pady=(9, 7))
@@ -550,14 +676,14 @@ class DitadoLocalApp:
                     corner_radius=11,
                     fg_color="#7C5CFC",
                     text_color="#FFFFFF",
-                    font=ctk.CTkFont(size=14, weight="bold"),
+                    font=app_font(size=14, weight="bold"),
                     padx=14,
                 ).pack(side="left")
         ctk.CTkLabel(
             hotkey_group,
             text="Fale e solte Espaço para inserir o texto",
             text_color="#B0B0BC",
-            font=ctk.CTkFont(size=11),
+            font=app_font(size=11),
         ).pack(anchor="w")
 
         action_group = ctk.CTkFrame(hero_grid, fg_color="transparent")
@@ -577,7 +703,7 @@ class DitadoLocalApp:
             action_group,
             text="Sempre disponível na área de transferência",
             text_color="#72727F",
-            font=ctk.CTkFont(size=9),
+            font=app_font(size=9),
         ).pack(pady=(7, 0))
 
         settings = ctk.CTkFrame(tab, fg_color="#17171D", corner_radius=17)
@@ -589,7 +715,7 @@ class DitadoLocalApp:
             inner,
             text="Microfone fixo",
             text_color="#DADAE2",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=app_font(size=12, weight="bold"),
         ).pack(anchor="w")
         microphone_labels = [self._device_label(device) for device in self.input_devices]
         self.microphone = ctk.CTkComboBox(
@@ -612,7 +738,7 @@ class DitadoLocalApp:
             inner,
             text="Idioma falado",
             text_color="#DADAE2",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=app_font(size=12, weight="bold"),
         ).pack(anchor="w")
         self.transcription_language_control = ctk.CTkComboBox(
             inner,
@@ -667,7 +793,7 @@ class DitadoLocalApp:
             details,
             text="MODO DE TRANSCRIÇÃO",
             text_color="#9B87F5",
-            font=ctk.CTkFont(size=10, weight="bold"),
+            font=app_font(size=10, weight="bold"),
         ).pack(anchor="w", padx=16, pady=(13, 7))
         self.transcription_profile_control = ctk.CTkSegmentedButton(
             details,
@@ -691,7 +817,7 @@ class DitadoLocalApp:
             details,
             textvariable=self.profile_description_text,
             text_color="#B8B8C3",
-            font=ctk.CTkFont(size=11),
+            font=app_font(size=11),
         ).pack(anchor="w", padx=16, pady=(7, 13))
 
     def _build_switch_row(self, parent, label, variable, command):
@@ -700,7 +826,7 @@ class DitadoLocalApp:
             row,
             text=label,
             text_color="#C8C8D2",
-            font=ctk.CTkFont(size=11),
+            font=app_font(size=11),
         ).pack(side="left")
         ctk.CTkSwitch(
             row,
@@ -718,13 +844,13 @@ class DitadoLocalApp:
             tab,
             text="Ensine as grafias que devem ser usadas",
             text_color="#FFFFFF",
-            font=ctk.CTkFont(size=17, weight="bold"),
+            font=app_font(size=17, weight="bold"),
         ).pack(anchor="w", padx=18, pady=(18, 4))
         ctk.CTkLabel(
             tab,
             text="A versão correta influencia o reconhecimento e substitui a forma errada no texto final.",
             text_color="#9696A3",
-            font=ctk.CTkFont(size=11),
+            font=app_font(size=11),
         ).pack(anchor="w", padx=18)
 
         add_card = ctk.CTkFrame(tab, fg_color="#17171D", corner_radius=16)
@@ -778,13 +904,13 @@ class DitadoLocalApp:
             title_group,
             text="Histórico local",
             text_color="#FFFFFF",
-            font=ctk.CTkFont(size=17, weight="bold"),
+            font=app_font(size=17, weight="bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_group,
             text="Transcrições, ações e cópias opcionais protegidas pelo Windows",
             text_color="#858592",
-            font=ctk.CTkFont(size=10),
+            font=app_font(size=10),
         ).pack(anchor="w", pady=(3, 0))
         ctk.CTkButton(
             header,
@@ -803,90 +929,118 @@ class DitadoLocalApp:
             width=108,
             height=34,
             corner_radius=10,
-            fg_color="#2B2750",
-            hover_color="#373063",
+            fg_color=APP_COLORS["surface_muted"],
+            hover_color=APP_COLORS["surface_hover"],
+            border_width=1,
+            border_color=APP_COLORS["border"],
+            text_color=APP_COLORS["text"],
+            font=app_font(11, "bold"),
             command=self._copy_latest_transcription,
         ).pack(side="right", padx=(0, 8))
 
         self.history_frame = ctk.CTkScrollableFrame(
             tab,
-            fg_color="#121217",
+            fg_color=APP_COLORS["surface_deep"],
             corner_radius=15,
+            border_width=1,
+            border_color=APP_COLORS["border"],
         )
         self.history_frame.pack(fill="both", expand=True, padx=18, pady=(0, 16))
 
     def _build_agent_tab(self, tab):
-        hero = ctk.CTkFrame(tab, fg_color="#19151C", corner_radius=20, border_width=1, border_color="#34273A")
+        hero = ctk.CTkFrame(
+            tab,
+            fg_color=APP_COLORS["accent_tint"],
+            corner_radius=20,
+            border_width=1,
+            border_color=APP_COLORS["accent"],
+        )
         hero.pack(fill="x", padx=16, pady=(16, 12))
         ctk.CTkLabel(
             hero,
             text="MODO AGENTE LOCAL",
-            text_color="#F0A6FF",
-            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=APP_COLORS["accent"],
+            font=app_font(size=10, weight="bold"),
         ).pack(anchor="w", padx=20, pady=(18, 4))
         ctk.CTkLabel(
             hero,
-            text="Selecione um texto e segure Ctrl esquerdo + Alt esquerdo",
-            text_color="#FFFFFF",
-            font=ctk.CTkFont(size=16, weight="bold"),
+            text="Fale com o agente sem abrir o aplicativo",
+            text_color=APP_COLORS["text_strong"],
+            font=app_font(size=16, weight="bold"),
         ).pack(anchor="w", padx=20)
         ctk.CTkLabel(
             hero,
-            text="Fale o que deseja fazer e solte qualquer uma das teclas. O resultado substitui a seleção e também fica copiado.",
-            text_color="#B6ABB9",
+            text=(
+                "Em qualquer aplicativo, segure Ctrl esquerdo + Alt esquerdo e fale. "
+                "Depois da primeira resposta, clique em Continuar no chat no overlay "
+                "flutuante para digitar os próximos ajustes sem abrir a janela principal."
+            ),
+            text_color=APP_COLORS["text_muted"],
             wraplength=650,
             justify="left",
-            font=ctk.CTkFont(size=11),
+            font=app_font(size=11),
         ).pack(anchor="w", padx=20, pady=(7, 18))
 
-        examples = ctk.CTkFrame(tab, fg_color="#15151B", corner_radius=17)
+        examples = ctk.CTkFrame(
+            tab,
+            fg_color=APP_COLORS["surface"],
+            corner_radius=17,
+            border_width=1,
+            border_color=APP_COLORS["border"],
+        )
         examples.pack(fill="x", padx=16, pady=8)
         ctk.CTkLabel(
             examples,
             text="EXEMPLOS DE COMANDO",
-            text_color="#8C8C99",
-            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=APP_COLORS["text_subtle"],
+            font=app_font(size=10, weight="bold"),
         ).pack(anchor="w", padx=18, pady=(16, 9))
         for example in [
-            "Formate este texto como uma lista clara",
-            "Deixe mais profissional e conciso",
-            "Traduza para inglês sem alterar os dados",
-            "Corrija a gramática mantendo meu tom",
-            "Use a skill Resposta profissional",
+            "Com seleção: Formate este texto como uma lista clara",
+            "No chat: Agora deixe mais direto",
+            "No chat: Mantenha o tom, mas reduza pela metade",
+            "Com seleção: Traduza para inglês sem alterar os dados",
+            "Com seleção: Use a skill Resposta profissional",
         ]:
             ctk.CTkLabel(
                 examples,
                 text=f"•  {example}",
-                text_color="#C6C6D0",
-                font=ctk.CTkFont(size=11),
+                text_color=APP_COLORS["text"],
+                font=app_font(size=11),
             ).pack(anchor="w", padx=18, pady=3)
         ctk.CTkLabel(examples, text="", height=8).pack()
 
-        agent_status = ctk.CTkFrame(tab, fg_color="#111116", corner_radius=15)
+        agent_status = ctk.CTkFrame(
+            tab,
+            fg_color=APP_COLORS["surface_deep"],
+            corner_radius=15,
+            border_width=1,
+            border_color=APP_COLORS["border"],
+        )
         agent_status.pack(fill="x", padx=16, pady=(8, 16))
         ctk.CTkLabel(
             agent_status,
             text="AGENTE",
-            text_color="#E0A6EB",
-            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=APP_COLORS["primary"],
+            font=app_font(size=10, weight="bold"),
         ).pack(anchor="w", padx=16, pady=(13, 2))
         ctk.CTkLabel(
             agent_status,
             textvariable=self.agent_status_text,
-            text_color="#A5A5B0",
-            font=ctk.CTkFont(size=11),
+            text_color=APP_COLORS["text_muted"],
+            font=app_font(size=11),
         ).pack(anchor="w", padx=16, pady=(0, 13))
         ctk.CTkLabel(
             agent_status,
             textvariable=self.rules_status_text,
-            text_color="#F0ABFC",
-            font=ctk.CTkFont(size=10),
+            text_color=APP_COLORS["accent"],
+            font=app_font(size=10),
         ).pack(anchor="w", padx=16, pady=(0, 6))
         ctk.CTkLabel(
             agent_status,
             textvariable=self.skills_status_text,
-            text_color="#C4B5FD",
-            font=ctk.CTkFont(size=10),
+            text_color=APP_COLORS["primary"],
+            font=app_font(size=10),
         ).pack(anchor="w", padx=16, pady=(0, 13))
 
     def _build_rules_tab(self, tab):
@@ -901,7 +1055,7 @@ class DitadoLocalApp:
             canvas,
             text="Regras permanentes",
             text_color="#FFFFFF",
-            font=ctk.CTkFont(size=18, weight="bold"),
+            font=app_font(size=18, weight="bold"),
         ).pack(anchor="w", padx=10, pady=(8, 3))
         ctk.CTkLabel(
             canvas,
@@ -912,7 +1066,7 @@ class DitadoLocalApp:
             text_color="#9696A3",
             wraplength=650,
             justify="left",
-            font=ctk.CTkFont(size=11),
+            font=app_font(size=11),
         ).pack(anchor="w", padx=10)
 
         form = ctk.CTkFrame(canvas, fg_color="#17171D", corner_radius=16)
@@ -921,7 +1075,7 @@ class DitadoLocalApp:
             form,
             text="NOVA REGRA",
             text_color="#F0ABFC",
-            font=ctk.CTkFont(size=10, weight="bold"),
+            font=app_font(size=10, weight="bold"),
         )
         self.rule_form_title.pack(anchor="w", padx=14, pady=(13, 7))
 
@@ -938,7 +1092,7 @@ class DitadoLocalApp:
             form,
             text="INSTRUÇÕES DA REGRA",
             text_color="#8C8C99",
-            font=ctk.CTkFont(size=9, weight="bold"),
+            font=app_font(size=9, weight="bold"),
         ).pack(anchor="w", padx=14, pady=(10, 3))
         self.rule_instructions_text = ctk.CTkTextbox(
             form,
@@ -947,7 +1101,7 @@ class DitadoLocalApp:
             border_width=1,
             border_color="#33333D",
             wrap="word",
-            font=ctk.CTkFont(size=11),
+            font=app_font(size=11),
         )
         self.rule_instructions_text.pack(fill="x", padx=14)
 
@@ -992,7 +1146,7 @@ class DitadoLocalApp:
             canvas,
             text="Skills do agente",
             text_color="#FFFFFF",
-            font=ctk.CTkFont(size=18, weight="bold"),
+            font=app_font(size=18, weight="bold"),
         ).pack(anchor="w", padx=10, pady=(8, 3))
         ctk.CTkLabel(
             canvas,
@@ -1003,7 +1157,7 @@ class DitadoLocalApp:
             text_color="#9696A3",
             wraplength=650,
             justify="left",
-            font=ctk.CTkFont(size=11),
+            font=app_font(size=11),
         ).pack(anchor="w", padx=10)
 
         form = ctk.CTkFrame(canvas, fg_color="#17171D", corner_radius=16)
@@ -1012,7 +1166,7 @@ class DitadoLocalApp:
             form,
             text="NOVA SKILL",
             text_color="#C4B5FD",
-            font=ctk.CTkFont(size=10, weight="bold"),
+            font=app_font(size=10, weight="bold"),
         )
         self.skill_form_title.pack(anchor="w", padx=14, pady=(13, 7))
 
@@ -1049,7 +1203,7 @@ class DitadoLocalApp:
             form,
             text="INSTRUÇÕES",
             text_color="#8C8C99",
-            font=ctk.CTkFont(size=9, weight="bold"),
+            font=app_font(size=9, weight="bold"),
         ).pack(anchor="w", padx=14, pady=(10, 3))
         self.skill_instructions_text = ctk.CTkTextbox(
             form,
@@ -1058,7 +1212,7 @@ class DitadoLocalApp:
             border_width=1,
             border_color="#33333D",
             wrap="word",
-            font=ctk.CTkFont(size=11),
+            font=app_font(size=11),
         )
         self.skill_instructions_text.pack(fill="x", padx=14)
 
@@ -1066,7 +1220,7 @@ class DitadoLocalApp:
             form,
             text="EXEMPLOS OPCIONAIS, UM POR LINHA",
             text_color="#8C8C99",
-            font=ctk.CTkFont(size=9, weight="bold"),
+            font=app_font(size=9, weight="bold"),
         ).pack(anchor="w", padx=14, pady=(10, 3))
         self.skill_examples_text = ctk.CTkTextbox(
             form,
@@ -1075,7 +1229,7 @@ class DitadoLocalApp:
             border_width=1,
             border_color="#33333D",
             wrap="word",
-            font=ctk.CTkFont(size=10),
+            font=app_font(size=10),
         )
         self.skill_examples_text.pack(fill="x", padx=14)
 
@@ -1378,7 +1532,7 @@ class DitadoLocalApp:
                 text_color="#858592",
                 wraplength=610,
                 justify="left",
-                font=ctk.CTkFont(size=11),
+                font=app_font(size=11),
             ).pack(anchor="w", padx=14, pady=16)
             return
 
@@ -1397,7 +1551,7 @@ class DitadoLocalApp:
                 header,
                 text=rule.get("name", "Regra"),
                 text_color="#FFFFFF",
-                font=ctk.CTkFont(size=13, weight="bold"),
+                font=app_font(size=13, weight="bold"),
             ).pack(side="left")
             enabled_variable = tk.BooleanVar(value=rule.get("enabled", True))
             ctk.CTkSwitch(
@@ -1416,7 +1570,7 @@ class DitadoLocalApp:
                 text_color="#B7B7C2",
                 wraplength=610,
                 justify="left",
-                font=ctk.CTkFont(size=10),
+                font=app_font(size=10),
             ).pack(anchor="w", padx=13)
             actions = ctk.CTkFrame(card, fg_color="transparent")
             actions.pack(fill="x", padx=10, pady=(7, 10))
@@ -1539,7 +1693,7 @@ class DitadoLocalApp:
                 text_color="#858592",
                 wraplength=610,
                 justify="left",
-                font=ctk.CTkFont(size=11),
+                font=app_font(size=11),
             ).pack(anchor="w", padx=14, pady=16)
             return
 
@@ -1558,7 +1712,7 @@ class DitadoLocalApp:
                 header,
                 text=skill.get("name", "Skill"),
                 text_color="#FFFFFF",
-                font=ctk.CTkFont(size=13, weight="bold"),
+                font=app_font(size=13, weight="bold"),
             ).pack(side="left")
             enabled_variable = tk.BooleanVar(value=skill.get("enabled", True))
             ctk.CTkSwitch(
@@ -1577,7 +1731,7 @@ class DitadoLocalApp:
                 text_color="#B7B7C2",
                 wraplength=610,
                 justify="left",
-                font=ctk.CTkFont(size=10),
+                font=app_font(size=10),
             ).pack(anchor="w", padx=13)
             triggers = ", ".join(skill.get("triggers", []))
             if triggers:
@@ -1587,7 +1741,7 @@ class DitadoLocalApp:
                     text_color="#A78BFA",
                     wraplength=610,
                     justify="left",
-                    font=ctk.CTkFont(size=9),
+                    font=app_font(size=9),
                 ).pack(anchor="w", padx=13, pady=(5, 0))
             actions = ctk.CTkFrame(card, fg_color="transparent")
             actions.pack(fill="x", padx=10, pady=(7, 10))
@@ -1661,7 +1815,7 @@ class DitadoLocalApp:
                 self.overlay.show(
                     "agent_recording",
                     "Agente ouvindo...",
-                    "Solte Ctrl ou Alt para executar",
+                    "Selecione um texto e fale a instrução",
                     "#E879F9",
                 )
                 threading.Thread(target=self._capture_selected_text, daemon=True).start()
@@ -1751,7 +1905,7 @@ class DitadoLocalApp:
             self.overlay.show(
                 "agent_processing",
                 "Entendendo o pedido...",
-                "Mantenha o texto selecionado",
+                "Aplicando sua instrução ao texto selecionado",
                 "#E879F9",
             )
         else:
@@ -1918,31 +2072,51 @@ class DitadoLocalApp:
             if mode == "agent":
                 self.selection_ready.wait(timeout=2.0)
                 if not self.agent_selected_text:
-                    raise RuntimeError("Selecione um texto antes de usar Ctrl + Alt.")
+                    raise RuntimeError(
+                        "Selecione um texto para iniciar uma conversa com o agente."
+                    )
                 rules = self.config.get_rules(enabled_only=True)
                 skills = self.config.get_skills(enabled_only=True)
                 selected_skill = select_voice_skill(spoken_text, skills)
                 if selected_skill:
-                    pipeline_subtitle = f"Skill: {selected_skill.get('name', 'ativa')}"
+                    pipeline_subtitle = (
+                        f"Skill: {selected_skill.get('name', 'ativa')}"
+                    )
                 elif skills:
-                    pipeline_subtitle = "Nenhuma skill ativada; aplicando sua instrução"
+                    pipeline_subtitle = (
+                        "Nenhuma skill ativada; aplicando sua instrução"
+                    )
                 else:
                     pipeline_subtitle = "Aplicando sua instrução localmente"
                 self.events.put(
                     (
                         "pipeline_status",
-                        ("Agindo sobre a seleção...", pipeline_subtitle, "#E879F9"),
+                        (
+                            "Agindo sobre a seleção...",
+                            pipeline_subtitle,
+                            "#E879F9",
+                        ),
                     )
                 )
-                final_text = self.ollama.transform_selected_text(
-                    self.agent_selected_text,
-                    spoken_text,
-                    skills=skills,
-                    selected_skill=selected_skill,
-                    rules=rules,
+                final_text, conversation = (
+                    self.ollama.start_selected_text_conversation(
+                        self.agent_selected_text,
+                        spoken_text,
+                        skills=skills,
+                        selected_skill=selected_skill,
+                        rules=rules,
+                    )
                 )
                 final_text = apply_custom_corrections(final_text, corrections)
+                if conversation:
+                    conversation = dict(conversation)
+                    conversation["messages"] = [
+                        dict(message) for message in conversation["messages"]
+                    ]
+                    conversation["messages"][-1]["content"] = final_text
+                    conversation = normalize_agent_conversation(conversation)
             else:
+                conversation = None
                 final_text = spoken_text
                 if bool(self.config.get("grammar_correction", True)):
                     self.events.put(
@@ -1958,49 +2132,89 @@ class DitadoLocalApp:
                         final_text = spoken_text
 
             elapsed = time.perf_counter() - started_at
-            self.events.put(("finish", (final_text.strip(), elapsed, mode)))
+            self.events.put(
+                (
+                    "finish",
+                    (
+                        final_text.strip(),
+                        elapsed,
+                        mode,
+                        conversation,
+                    ),
+                )
+            )
         except Exception as error:
             self.events.put(("error", str(error)))
 
     def _finish_result(self, payload):
-        text, elapsed, mode = payload
+        text, elapsed, mode, conversation = payload
         self.processing = False
         source = "agent" if mode == "agent" else "transcription"
-        self._copy_text(text, source)
+        saved_entry_id = self._copy_text(
+            text,
+            source,
+            conversation=conversation,
+        )
         self.status.set(f"Pronto em {elapsed:.1f} s. O resultado está copiado.")
         self.backend_text.set(self.model_backend)
         self.status_dot.configure(text_color="#4ADE80")
         self.ready_badge.configure(text="PRONTO", fg_color="#173727")
-        self.overlay.show(
-            "success",
-            "Resultado pronto",
-            f"Copiado em {elapsed:.1f} s",
-            "#4ADE80",
+        has_chat_action = bool(
+            mode == "agent"
+            and conversation
+            and saved_entry_id
         )
+        if has_chat_action:
+            self.overlay.show(
+                "success",
+                "Resultado pronto",
+                "Clique para continuar por texto",
+                "#4ADE80",
+                action_label="Continuar no chat",
+                on_action=self._open_latest_agent_chat,
+            )
+        else:
+            self.overlay.show(
+                "success",
+                "Resultado pronto",
+                f"Copiado em {elapsed:.1f} s",
+                "#4ADE80",
+            )
 
-        should_paste = mode == "agent" or bool(self.config.get("auto_paste", True))
+        should_paste = mode == "agent" or bool(
+            self.config.get("auto_paste", True)
+        )
         if should_paste:
             self._restore_target_window()
             self.root.after(150, self._paste_into_active_app)
-        self.root.after(1200, self.overlay.hide)
+        hide_delay = 12000 if has_chat_action else 1200
+        self.root.after(hide_delay, self.overlay.hide)
 
-    def _copy_text(self, text, source):
+    def _copy_text(self, text, source, conversation=None):
+        self._copy_to_clipboard(text)
+        entry_id = self.history.add(
+            text,
+            source,
+            conversation=conversation,
+        )
+        self.history_dirty = True
+        return entry_id
+
+    def _copy_to_clipboard(self, text):
         pyperclip.copy(text)
         self.last_clipboard_text = text
         self.ignore_clipboard_until = time.monotonic() + 0.8
-        self.history.add(text, source)
-        self.history_dirty = True
 
     def _copy_latest_transcription(self):
         latest = self.history.latest_transcription()
         if not latest:
             self.status.set("Ainda não existe uma transcrição no histórico.")
             return
-        self._copy_text(latest, "transcription")
+        self._copy_to_clipboard(latest)
         self.status.set("Última transcrição copiada novamente.")
 
     def _copy_history_item(self, text):
-        self._copy_text(text, "clipboard")
+        self._copy_to_clipboard(text)
         self.status.set("Item do histórico copiado.")
 
     def _clear_history(self):
@@ -2050,7 +2264,8 @@ class DitadoLocalApp:
             ctk.CTkLabel(
                 self.history_frame,
                 text="O histórico está vazio. Tudo que você copiar aparecerá aqui.",
-                text_color="#777784",
+                text_color=APP_COLORS["text_subtle"],
+                font=app_font(11),
             ).pack(pady=24)
             return
         source_names = {
@@ -2060,7 +2275,13 @@ class DitadoLocalApp:
             "selection": "Seleção",
         }
         for entry in entries:
-            card = ctk.CTkFrame(self.history_frame, fg_color="#1A1A21", corner_radius=12)
+            card = ctk.CTkFrame(
+                self.history_frame,
+                fg_color=APP_COLORS["surface"],
+                corner_radius=14,
+                border_width=1,
+                border_color=APP_COLORS["border"],
+            )
             card.pack(fill="x", pady=5, padx=4)
             body = ctk.CTkFrame(card, fg_color="transparent")
             body.pack(side="left", fill="both", expand=True, padx=12, pady=9)
@@ -2068,30 +2289,182 @@ class DitadoLocalApp:
             ctk.CTkLabel(
                 body,
                 text=metadata,
-                text_color="#898996",
-                font=ctk.CTkFont(size=9),
+                text_color=(
+                    APP_COLORS["primary"]
+                    if entry.get("source") == "agent"
+                    else APP_COLORS["text_subtle"]
+                ),
+                font=app_font(size=9),
             ).pack(anchor="w")
             text = entry.get("text", "")
             preview = text if len(text) <= 280 else text[:277] + "..."
             ctk.CTkLabel(
                 body,
                 text=preview,
-                text_color="#E0E0E7",
+                text_color=APP_COLORS["text"],
                 wraplength=520,
                 justify="left",
                 anchor="w",
-                font=ctk.CTkFont(size=10),
+                font=app_font(size=10),
             ).pack(anchor="w", pady=(4, 0))
+            actions = ctk.CTkFrame(card, fg_color="transparent")
+            actions.pack(side="right", padx=10, pady=9)
+            if can_continue_agent_conversation(entry):
+                ctk.CTkButton(
+                    actions,
+                    text="Continuar",
+                    width=88,
+                    height=30,
+                    corner_radius=9,
+                    fg_color=APP_COLORS["accent"],
+                    hover_color=APP_COLORS["accent_hover"],
+                    text_color=APP_COLORS["text_strong"],
+                    font=app_font(10, "bold"),
+                    command=lambda entry=entry: self._open_agent_chat(entry),
+                ).pack(pady=(0, 6))
             ctk.CTkButton(
-                card,
+                actions,
                 text="Copiar",
                 width=70,
                 height=30,
                 corner_radius=9,
-                fg_color="#2B2750",
-                hover_color="#3A3464",
+                fg_color=APP_COLORS["surface_muted"],
+                hover_color=APP_COLORS["surface_hover"],
+                border_width=1,
+                border_color=APP_COLORS["border"],
+                text_color=APP_COLORS["text"],
+                font=app_font(10, "bold"),
                 command=lambda text=text: self._copy_history_item(text),
-            ).pack(side="right", padx=10)
+            ).pack()
+
+    def _open_agent_chat(self, entry):
+        conversation = normalize_agent_conversation(entry.get("conversation"))
+        entry_id = entry.get("id")
+        if conversation is None or not isinstance(entry_id, str):
+            self.status.set(
+                "Esta resposta antiga não guardou o contexto necessário para continuar."
+            )
+            return
+        if self.agent_chat_window and self.agent_chat_window.is_open():
+            self.agent_chat_window.close()
+        self.agent_chat_entry_id = entry_id
+        self.agent_chat_window = AgentChatWindow(
+            self.root,
+            conversation,
+            on_send=lambda instruction: self._send_agent_chat_follow_up(
+                entry_id,
+                conversation=self.agent_chat_window.conversation,
+                instruction=instruction,
+            ),
+            on_copy=self._copy_agent_chat_response,
+        )
+
+    def _open_latest_agent_chat(self):
+        entry = self.history.latest_agent_conversation()
+        if not can_continue_agent_conversation(entry):
+            self._show_error(
+                "Ainda não existe uma conversa do agente para continuar."
+            )
+            return
+        self._open_agent_chat(entry)
+
+    def _send_agent_chat_follow_up(self, entry_id, conversation, instruction):
+        def run_follow_up():
+            try:
+                result, updated = self.ollama.continue_selected_text_conversation(
+                    conversation,
+                    instruction,
+                )
+                result = apply_custom_corrections(
+                    result,
+                    self.config.get("corrections", []),
+                )
+                updated = dict(updated)
+                updated["messages"] = [
+                    dict(message) for message in updated["messages"]
+                ]
+                updated["messages"][-1]["content"] = result
+                updated = normalize_agent_conversation(updated)
+                if updated is None:
+                    raise RuntimeError(
+                        "A resposta não pôde ser preservada nesta conversa."
+                    )
+                self.events.put(
+                    (
+                        "agent_chat_reply",
+                        (entry_id, result, updated),
+                    )
+                )
+            except Exception as error:
+                self.events.put(
+                    (
+                        "agent_chat_error",
+                        (entry_id, str(error)),
+                    )
+                )
+
+        threading.Thread(target=run_follow_up, daemon=True).start()
+
+    def _finish_agent_chat_reply(self, payload):
+        entry_id, result, conversation = payload
+        if not self.history.update_conversation(
+            entry_id,
+            result,
+            conversation,
+        ):
+            if (
+                self.agent_chat_window
+                and self.agent_chat_entry_id == entry_id
+                and self.agent_chat_window.is_open()
+            ):
+                self.agent_chat_window.show_error(
+                    "A resposta chegou, mas a conversa não pôde ser salva."
+                )
+            return
+        self.history_dirty = True
+        self.status.set(
+            "O agente respondeu. Revise no mini chat e copie quando estiver satisfeito."
+        )
+        if (
+            self.agent_chat_window
+            and self.agent_chat_entry_id == entry_id
+            and self.agent_chat_window.is_open()
+        ):
+            self.agent_chat_window.show_reply(conversation)
+        if self.tabs.get() == "Histórico":
+            self._rebuild_history()
+
+    def _show_agent_chat_error(self, payload):
+        entry_id, message = payload
+        safe_messages = (
+            "Esta conversa não tem contexto válido para continuar.",
+            "Digite o ajuste que o agente deve fazer.",
+            "O ajuste está muito longo. Resuma o pedido antes de enviar.",
+            "A conversa atingiu o limite local. Inicie uma nova transformação.",
+        )
+        user_message = next(
+            (
+                safe_message
+                for safe_message in safe_messages
+                if message.startswith(safe_message)
+            ),
+            (
+                "O agente local não respondeu ao ajuste. A conversa foi preservada e "
+                "seu texto continua no campo. Verifique se o Ollama está disponível e "
+                "tente novamente."
+            ),
+        )
+        self.status.set(user_message)
+        if (
+            self.agent_chat_window
+            and self.agent_chat_entry_id == entry_id
+            and self.agent_chat_window.is_open()
+        ):
+            self.agent_chat_window.show_error(user_message)
+
+    def _copy_agent_chat_response(self, text):
+        self._copy_to_clipboard(text)
+        self.status.set("Resposta do agente copiada.")
 
     def _restore_target_window(self):
         if self.target_window and ctypes.windll.user32.IsWindow(self.target_window):
@@ -2142,15 +2515,24 @@ class DitadoLocalApp:
             elif event == "model_ready":
                 self.backend_text.set(self.model_backend)
                 self.agent_status_text.set(self.agent_backend)
-                self.status.set("Pronto. Use Ctrl + Espaço para ditar.")
+                self.status.set(
+                    "Pronto. Ctrl + Espaço dita; Ctrl esquerdo + Alt esquerdo "
+                    "fala com o agente."
+                )
                 self.status_dot.configure(text_color="#4ADE80")
                 self.ready_badge.configure(text="PRONTO", fg_color="#173727")
             elif event == "finish":
                 self._finish_result(payload)
+            elif event == "agent_chat_reply":
+                self._finish_agent_chat_reply(payload)
+            elif event == "agent_chat_error":
+                self._show_agent_chat_error(payload)
             elif event == "error":
                 self._show_error(payload)
             elif event == "show_window":
                 self._show_main_window()
+            elif event == "open_agent_chat":
+                self._open_latest_agent_chat()
             elif event == "copy_latest":
                 self._copy_latest_transcription()
             elif event == "exit":
@@ -2173,6 +2555,12 @@ class DitadoLocalApp:
                 lambda _icon, _item: self.events.put(("show_window", None)),
             ),
             pystray.MenuItem(
+                "Conversar com o agente",
+                lambda _icon, _item: self.events.put(
+                    ("open_agent_chat", None)
+                ),
+            ),
+            pystray.MenuItem(
                 "Copiar última transcrição",
                 lambda _icon, _item: self.events.put(("copy_latest", None)),
             ),
@@ -2184,7 +2572,7 @@ class DitadoLocalApp:
         return pystray.Icon(
             "ditado_local",
             icon_image,
-            "Ditado local: Ctrl + Espaço para falar",
+            "Ditado local: ditado e agente por voz",
             menu,
         )
 

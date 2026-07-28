@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.1.0"
+    [string]$Version = "0.2.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,8 +52,10 @@ $packageFiles = @(
     "config.example.json",
     "ditado_ai.py",
     "ditado_audio.py",
+    "ditado_chat.py",
     "ditado_local.pyw",
     "ditado_storage.py",
+    "ditado_theme.py",
     "install.ps1",
     "launch_ditado.vbs",
     "launch_ditado_background.vbs",
@@ -78,6 +80,22 @@ New-Item -ItemType Directory -Path $assetsDestination -Force | Out-Null
 Copy-Item `
     -LiteralPath (Join-Path $assetsSource "ditado-local.png") `
     -Destination (Join-Path $assetsDestination "ditado-local.png")
+
+$fontsSource = Join-Path $assetsSource "fonts"
+$fontsDestination = Join-Path $assetsDestination "fonts"
+foreach ($fontFileName in @("DMSans.ttf", "OFL.txt")) {
+    $fontSourcePath = Join-Path $fontsSource $fontFileName
+    if (-not (Test-Path -LiteralPath $fontSourcePath)) {
+        throw "Fonte obrigatoria ausente: assets\fonts\$fontFileName"
+    }
+}
+New-Item -ItemType Directory -Path $fontsDestination -Force | Out-Null
+Copy-Item `
+    -LiteralPath (Join-Path $fontsSource "DMSans.ttf") `
+    -Destination (Join-Path $fontsDestination "DMSans.ttf")
+Copy-Item `
+    -LiteralPath (Join-Path $fontsSource "OFL.txt") `
+    -Destination (Join-Path $fontsDestination "OFL.txt")
 
 Compress-Archive -LiteralPath $stagingRoot -DestinationPath $archivePath
 Write-Output $archivePath

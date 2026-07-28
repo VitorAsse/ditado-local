@@ -17,3 +17,5 @@ quando possível.
 - Textos selecionados e conteúdo da área de transferência podem conter dados sensíveis.
 - O endpoint padrão do Ollama aceita apenas conexões locais.
 - Alterar `DITADO_OLLAMA_URL` pode enviar texto para outro computador ou serviço.
+- Cada ajuste no mini chat reenvia ao endpoint configurado o texto original e os turnos
+  preservados daquela conversa.
