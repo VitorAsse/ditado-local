@@ -7,6 +7,6 @@ pycaw==20251023
 pynput==1.8.2
 pyperclip==1.11.0
 pystray==0.19.5
-setuptools==80.9.0
+setuptools==83.0.0
 sounddevice==0.5.5
 soxr==1.1.0
