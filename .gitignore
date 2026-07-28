@@ -1,0 +1,28 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+
+# Local user data
+config.json
+clipboard_history.dat
+
+# Downloaded runtimes and models
+gpu-libs/
+models/
+*.7z
+*.dll
+7zr.exe
+
+# Local verification and build output
+verification-*
+build/
+dist/
+release/
+*.spec
+
+# Editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

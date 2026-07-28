@@ -1,0 +1,14 @@
+{
+  "microphone_name": "",
+  "auto_paste": true,
+  "grammar_correction": true,
+  "capture_clipboard_history": false,
+  "mute_playback_while_recording": true,
+  "transcription_profile": "balanced",
+  "transcription_language": "auto",
+  "corrections": [],
+  "rules": [],
+  "skills": [],
+  "history_limit": 150,
+  "startup_enabled": true
+}

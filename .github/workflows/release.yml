@@ -1,0 +1,50 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the v prefix
+        required: true
+        default: 0.1.0
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --require-hashes -r requirements.lock
+
+      - name: Verify
+        run: |
+          python -m py_compile ditado_ai.py ditado_audio.py ditado_local.pyw ditado_storage.py
+          python -m unittest discover -v
+
+      - name: Package
+        shell: powershell
+        run: |
+          .\scripts\package-release.ps1 -Version "${{ inputs.version }}"
+
+      - name: Publish GitHub Release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ inputs.version }}" `
+            "release\DitadoLocal-${{ inputs.version }}.zip" `
+            --target "${{ github.sha }}" `
+            --title "Ditado Local ${{ inputs.version }}" `
+            --generate-notes

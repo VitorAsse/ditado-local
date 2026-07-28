@@ -1,0 +1,12 @@
+customtkinter==6.0.0
+ctranslate2==4.4.0
+faster-whisper==1.2.1
+numpy==2.4.6
+Pillow==12.3.0
+pycaw==20251023
+pynput==1.8.2
+pyperclip==1.11.0
+pystray==0.19.5
+setuptools==80.9.0
+sounddevice==0.5.5
+soxr==1.1.0
