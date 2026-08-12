@@ -428,6 +428,171 @@ class VoiceSkillRoutingTests(unittest.TestCase):
 
 
 class AgentConversationTests(unittest.TestCase):
+    def test_ctrl_space_preempts_armed_agent_before_dispatch(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.keys_down = {DITADO_LOCAL.pynput_keyboard.Key.alt_l}
+        app.dictation_chord_active = False
+        app.agent_chord_active = False
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app._is_left_agent_chord_physically_down = Mock(return_value=True)
+        app.start_recording = Mock()
+        app.stop_recording = Mock()
+        app._show_main_window = Mock()
+        app.root = Mock()
+        app.recording = False
+        app.closing = True
+
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.ctrl_l)
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.space)
+        with patch.object(DITADO_LOCAL, "SHOW_EVENT_HANDLE", 0, create=True):
+            app._process_events()
+
+        app.start_recording.assert_called_once_with("dictation")
+        self.assertTrue(app.dictation_chord_active)
+        self.assertFalse(app.agent_chord_active)
+
+    def test_ctrl_space_reclassifies_active_agent_recording_as_dictation(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.keys_down = {
+            DITADO_LOCAL.pynput_keyboard.Key.ctrl_l,
+            DITADO_LOCAL.pynput_keyboard.Key.alt_l,
+        }
+        app.dictation_chord_active = False
+        app.agent_chord_active = True
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app.recording = True
+        app.processing = False
+        app.recording_mode = "agent"
+        app.current_level = 0.0
+        app.agent_selected_text = "Texto selecionado"
+        app.selection_ready = DITADO_LOCAL.threading.Event()
+        app.agent_selection_cancelled = DITADO_LOCAL.threading.Event()
+        app.stream = Mock()
+        app.audio_chunks = [
+            DITADO_LOCAL.np.ones(8_000, dtype=DITADO_LOCAL.np.float32)
+        ]
+        app.input_sample_rate = 16_000
+        app.playback_mute = Mock()
+        app.config = Mock()
+        app.config.get.return_value = "balanced"
+        app.status = Mock()
+        app.status_dot = Mock()
+        app.ready_badge = Mock()
+        app.overlay = Mock()
+        app.root = Mock()
+        app.closing = True
+
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.space)
+        with patch.object(DITADO_LOCAL, "SHOW_EVENT_HANDLE", 0, create=True):
+            app._process_events()
+
+        self.assertEqual("dictation", app.recording_mode)
+        self.assertEqual("", app.agent_selected_text)
+        self.assertTrue(app.dictation_chord_active)
+        self.assertFalse(app.agent_chord_active)
+
+        app._on_key_release(DITADO_LOCAL.pynput_keyboard.Key.space)
+        with (
+            patch.object(DITADO_LOCAL, "SHOW_EVENT_HANDLE", 0, create=True),
+            patch.object(DITADO_LOCAL.threading, "Thread") as worker,
+        ):
+            app._process_events()
+
+        self.assertEqual(
+            "dictation",
+            worker.call_args.kwargs["args"][1],
+        )
+
+    def test_cancelled_agent_selection_capture_cannot_publish_selection(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.ignore_clipboard_until = 0.0
+        app.keyboard_controller = Mock()
+        app.target_window = None
+        app.agent_chord_active = False
+        app.agent_selected_text = ""
+        app.last_clipboard_text = "Texto anterior"
+        app.history = Mock()
+        app.history_dirty = False
+        app.selection_ready = DITADO_LOCAL.threading.Event()
+        app._read_clipboard_text = Mock(
+            side_effect=["Texto anterior", "Texto selecionado"]
+        )
+        app._restore_target_window = Mock()
+        cancellation = DITADO_LOCAL.threading.Event()
+
+        with (
+            patch.object(DITADO_LOCAL.pyperclip, "copy") as copy,
+            patch.object(
+                DITADO_LOCAL.time,
+                "sleep",
+                side_effect=lambda _seconds: cancellation.set(),
+            ),
+        ):
+            app._capture_selected_text(cancellation)
+
+        self.assertEqual("", app.agent_selected_text)
+        app.history.add.assert_not_called()
+        self.assertEqual("Texto anterior", copy.call_args.args[0])
+        self.assertTrue(app.selection_ready.is_set())
+
+    def test_ctrl_space_never_starts_agent_with_stale_alt_state(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.keys_down = {DITADO_LOCAL.pynput_keyboard.Key.alt_l}
+        app.dictation_chord_active = False
+        app.agent_chord_active = False
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app._is_left_agent_chord_physically_down = Mock(return_value=False)
+
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.ctrl_l)
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.space)
+
+        emitted_events = []
+        while not app.events.empty():
+            emitted_events.append(app.events.get())
+
+        self.assertEqual([("start", "dictation")], emitted_events)
+
+    def test_physical_hotkeys_are_processed_while_injected_keys_are_ignored(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.keys_down = set()
+        app.dictation_chord_active = False
+        app.agent_chord_active = False
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app._is_left_agent_chord_physically_down = Mock(return_value=True)
+
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.ctrl_l)
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.alt_l)
+        self.assertEqual(("start", "agent"), app.events.get())
+
+        app._on_key_release(
+            DITADO_LOCAL.pynput_keyboard.Key.alt_l,
+            injected=True,
+        )
+        self.assertTrue(app.events.empty())
+        self.assertTrue(app.agent_chord_active)
+
+        app._on_key_release(
+            DITADO_LOCAL.pynput_keyboard.Key.alt_l,
+            injected=False,
+        )
+        self.assertEqual(("stop", None), app.events.get())
+        self.assertFalse(app.agent_chord_active)
+
+        app._on_key_release(
+            DITADO_LOCAL.pynput_keyboard.Key.ctrl_l,
+            injected=False,
+        )
+        app._on_key_press(
+            DITADO_LOCAL.pynput_keyboard.Key.ctrl_l,
+            injected=False,
+        )
+        app._on_key_press(
+            DITADO_LOCAL.pynput_keyboard.Key.space,
+            injected=False,
+        )
+
+        self.assertEqual(("start", "dictation"), app.events.get())
+
     def test_agent_result_overlay_opens_chat_when_action_is_clicked(self):
         root = DITADO_LOCAL.ctk.CTk()
         root.geometry("1x1+20+20")
@@ -516,11 +681,11 @@ class AgentConversationTests(unittest.TestCase):
 
     def test_left_control_and_alt_start_and_stop_global_agent_recording(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
-        app.suppress_hotkeys_until = 0.0
         app.keys_down = set()
         app.dictation_chord_active = False
         app.agent_chord_active = False
         app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app._is_left_agent_chord_physically_down = Mock(return_value=True)
 
         app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.ctrl_l)
         app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.alt_l)

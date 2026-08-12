@@ -410,6 +410,7 @@ class FloatingOverlay:
 class DitadoLocalApp:
     CTRL_KEYS = {pynput_keyboard.Key.ctrl, pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.ctrl_r}
     LEFT_AGENT_KEYS = {pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.alt_l}
+    LEFT_AGENT_VIRTUAL_KEYS = (0xA2, 0xA4)
 
     def __init__(self):
         ctk.set_appearance_mode("dark")
@@ -454,12 +455,12 @@ class DitadoLocalApp:
         self.target_window = None
         self.agent_selected_text = ""
         self.selection_ready = threading.Event()
+        self.agent_selection_cancelled = threading.Event()
         self.keys_down = set()
         self.dictation_chord_active = False
         self.agent_chord_active = False
         self.agent_chat_window = None
         self.agent_chat_entry_id = None
-        self.suppress_hotkeys_until = 0.0
         self.ignore_clipboard_until = 0.0
         self.history_dirty = True
         self.last_clipboard_text = self._read_clipboard_text()
@@ -1766,23 +1767,36 @@ class DitadoLocalApp:
                 command=lambda skill_id=skill.get("id"): self._remove_skill(skill_id),
             ).pack(side="right", padx=(0, 7))
 
-    def _on_key_press(self, key):
-        if time.monotonic() < self.suppress_hotkeys_until:
+    def _is_left_agent_chord_physically_down(self):
+        return all(
+            ctypes.windll.user32.GetAsyncKeyState(virtual_key) & 0x8000
+            for virtual_key in self.LEFT_AGENT_VIRTUAL_KEYS
+        )
+
+    def _on_key_press(self, key, injected=False):
+        if injected:
             return
         self.keys_down.add(key)
         ctrl_down = bool(self.keys_down & self.CTRL_KEYS)
         left_agent_down = self.LEFT_AGENT_KEYS.issubset(self.keys_down)
 
-        if key == pynput_keyboard.Key.space and ctrl_down and not left_agent_down:
-            if not self.dictation_chord_active and not self.agent_chord_active:
+        if key == pynput_keyboard.Key.space and ctrl_down:
+            if not self.dictation_chord_active:
+                self.agent_chord_active = False
                 self.dictation_chord_active = True
                 self.events.put(("start", "dictation"))
-        elif left_agent_down and not self.agent_chord_active and not self.dictation_chord_active:
+        elif (
+            key in self.LEFT_AGENT_KEYS
+            and left_agent_down
+            and self._is_left_agent_chord_physically_down()
+            and not self.agent_chord_active
+            and not self.dictation_chord_active
+        ):
             self.agent_chord_active = True
             self.events.put(("start", "agent"))
 
-    def _on_key_release(self, key):
-        if time.monotonic() < self.suppress_hotkeys_until:
+    def _on_key_release(self, key, injected=False):
+        if injected:
             return
         if self.dictation_chord_active and key == pynput_keyboard.Key.space:
             self.dictation_chord_active = False
@@ -1793,7 +1807,11 @@ class DitadoLocalApp:
         self.keys_down.discard(key)
 
     def start_recording(self, mode):
-        if self.recording or self.processing:
+        if self.recording:
+            if mode == "dictation" and self.recording_mode == "agent":
+                self._switch_agent_recording_to_dictation()
+            return
+        if self.processing:
             return
         try:
             self.target_window = ctypes.windll.user32.GetForegroundWindow()
@@ -1804,6 +1822,7 @@ class DitadoLocalApp:
             self.input_sample_rate = device["sample_rate"]
             self.agent_selected_text = ""
             self.selection_ready = threading.Event()
+            self.agent_selection_cancelled = threading.Event()
             self.recording = True
             if bool(self.mute_playback_while_recording.get()):
                 self.playback_mute.mute_for_recording()
@@ -1818,8 +1837,13 @@ class DitadoLocalApp:
                     "Selecione um texto e fale a instrução",
                     "#E879F9",
                 )
-                threading.Thread(target=self._capture_selected_text, daemon=True).start()
+                threading.Thread(
+                    target=self._capture_selected_text,
+                    args=(self.agent_selection_cancelled,),
+                    daemon=True,
+                ).start()
             else:
+                self.agent_selection_cancelled.set()
                 self.status.set("Ouvindo sua voz...")
                 self.status_dot.configure(text_color="#A78BFA")
                 self.ready_badge.configure(text="OUVINDO", fg_color="#2D2347")
@@ -1836,19 +1860,35 @@ class DitadoLocalApp:
             self.stream = None
             self._show_error(f"Não foi possível acessar o microfone: {error}")
 
+    def _switch_agent_recording_to_dictation(self):
+        self.recording_mode = "dictation"
+        self.agent_selection_cancelled.set()
+        self.agent_selected_text = ""
+        self.selection_ready.set()
+        self.status.set("Ouvindo sua voz...")
+        self.status_dot.configure(text_color="#A78BFA")
+        self.ready_badge.configure(text="OUVINDO", fg_color="#2D2347")
+        self.overlay.show(
+            "recording",
+            "Ouvindo...",
+            "Solte Espaço para transcrever",
+            "#A78BFA",
+        )
+
     def _capture_audio(self, indata, _frames, _time_info, _status):
         channel = indata[:, 0].copy()
         self.audio_chunks.append(channel)
         rms = float(np.sqrt(np.mean(np.square(channel)))) if channel.size else 0.0
         self.current_level = min(1.0, rms * 12.0)
 
-    def _capture_selected_text(self):
+    def _capture_selected_text(self, cancellation):
         previous_clipboard = self._read_clipboard_text()
         sentinel = f"__DITADO_SELECTION_{uuid.uuid4()}__"
         try:
+            if cancellation.is_set():
+                return
             self.ignore_clipboard_until = time.monotonic() + 1.2
             pyperclip.copy(sentinel)
-            self.suppress_hotkeys_until = time.monotonic() + 0.45
             self._restore_target_window()
             self.keyboard_controller.release(pynput_keyboard.Key.alt_l)
             time.sleep(0.04)
@@ -1856,6 +1896,10 @@ class DitadoLocalApp:
             self.keyboard_controller.release("c")
             time.sleep(0.16)
             copied = self._read_clipboard_text()
+            if cancellation.is_set():
+                pyperclip.copy(previous_clipboard)
+                self.last_clipboard_text = previous_clipboard
+                return
             if self.agent_chord_active:
                 self.keyboard_controller.press(pynput_keyboard.Key.alt_l)
 
@@ -2476,7 +2520,6 @@ class DitadoLocalApp:
     def _paste_into_active_app(self):
         try:
             self._restore_target_window()
-            self.suppress_hotkeys_until = time.monotonic() + 0.3
             self.keyboard_controller.press(pynput_keyboard.Key.ctrl)
             self.keyboard_controller.press("v")
             self.keyboard_controller.release("v")
@@ -2503,6 +2546,10 @@ class DitadoLocalApp:
             except queue.Empty:
                 break
             if event == "start":
+                if payload == "agent" and not self.agent_chord_active:
+                    continue
+                if payload == "dictation" and not self.dictation_chord_active:
+                    continue
                 self.start_recording(payload)
             elif event == "stop":
                 self.stop_recording()

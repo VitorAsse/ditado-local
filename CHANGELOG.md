@@ -2,6 +2,13 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.2.1 - 2026-08-12
+
+- `Ctrl + Espaço` sempre inicia o ditado, mesmo quando existe um estado antigo de `Alt`.
+- A gravação do agente muda com segurança para ditado quando o atalho de ditado prevalece.
+- Eventos de teclado gerados pelo próprio aplicativo não reativam os atalhos globais.
+- A captura de texto selecionado é cancelada sem publicar conteúdo antigo ao trocar de modo.
+
 ## 0.2.0 - 2026-07-28
 
 - Conversas do agente podem ser retomadas pelo Histórico em um mini chat local.
