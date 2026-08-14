@@ -2,6 +2,12 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.2.2 - 2026-08-14
+
+- A revisão gramatical trata a fala transcrita como texto literal, inclusive quando contém frases no imperativo.
+- Respostas que resumem, explicam, mudam números ou transformam o formato são descartadas antes de substituir a transcrição.
+- Quando a revisão local se afasta do conteúdo falado, o aplicativo preserva automaticamente o texto bruto do Whisper.
+
 ## 0.2.1 - 2026-08-12
 
 - `Ctrl + Espaço` sempre inicia o ditado, mesmo quando existe um estado antigo de `Alt`.
