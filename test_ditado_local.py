@@ -906,6 +906,87 @@ class AgentConversationTests(unittest.TestCase):
         self.assertEqual(("start", ("agent", 1)), start_event)
         self.assertEqual(("stop", ("agent", 1)), stop_event)
 
+    def test_ctrl_alt_delete_cancels_a_queued_agent_start(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.keys_down = set()
+        app.dictation_chord_active = False
+        app.agent_chord_active = False
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app._is_left_agent_chord_physically_down = Mock(return_value=True)
+        app.start_recording = Mock()
+        app.stop_recording = Mock()
+        app._cancel_recording = Mock()
+        app._show_main_window = Mock()
+        app.root = Mock()
+        app.recording = False
+        app.active_hotkey_session = None
+        app.closing = True
+
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.ctrl_l)
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.alt_l)
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.delete)
+        with patch.object(DITADO_LOCAL, "SHOW_EVENT_HANDLE", 0, create=True):
+            app._process_events()
+
+        app.start_recording.assert_not_called()
+        app.stop_recording.assert_not_called()
+        app._cancel_recording.assert_not_called()
+        self.assertFalse(app.agent_chord_active)
+        self.assertIsNone(app.agent_hotkey_session)
+
+    def test_delete_aborts_an_active_agent_recording_without_processing(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.keys_down = {
+            DITADO_LOCAL.pynput_keyboard.Key.ctrl_l,
+            DITADO_LOCAL.pynput_keyboard.Key.alt_l,
+        }
+        app.dictation_chord_active = False
+        app.agent_chord_active = True
+        app.agent_hotkey_session = 1
+        app.active_hotkey_session = ("agent", 1)
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app.recording = True
+        app.processing = False
+        stream = Mock()
+        app.stream = stream
+        app.audio_chunks = [DITADO_LOCAL.np.ones(100, dtype=DITADO_LOCAL.np.float32)]
+        app.current_level = 0.5
+        app.agent_selected_text = "Texto selecionado"
+        app.agent_selection_cancelled = DITADO_LOCAL.threading.Event()
+        app.selection_ready = DITADO_LOCAL.threading.Event()
+        app.playback_mute = Mock()
+        app.status = Mock()
+        app.status_dot = Mock()
+        app.ready_badge = Mock()
+        app.overlay = Mock()
+        app.root = Mock()
+        app._show_main_window = Mock()
+        app.closing = True
+
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.delete)
+        with (
+            patch.object(DITADO_LOCAL, "SHOW_EVENT_HANDLE", 0, create=True),
+            patch.object(DITADO_LOCAL.threading, "Thread") as worker,
+        ):
+            app._process_events()
+
+        self.assertFalse(app.recording)
+        self.assertFalse(app.processing)
+        self.assertFalse(app.agent_chord_active)
+        self.assertIsNone(app.agent_hotkey_session)
+        self.assertIsNone(app.active_hotkey_session)
+        self.assertIsNone(app.stream)
+        self.assertEqual([], app.audio_chunks)
+        self.assertEqual(0.0, app.current_level)
+        self.assertEqual("", app.agent_selected_text)
+        self.assertTrue(app.agent_selection_cancelled.is_set())
+        self.assertTrue(app.selection_ready.is_set())
+        stream.stop.assert_called_once_with()
+        stream.close.assert_called_once_with()
+        app.playback_mute.restore.assert_called_once_with()
+        app.overlay.hide.assert_called_once_with()
+        worker.assert_not_called()
+
     def test_latest_agent_conversation_ignores_newer_non_agent_entries(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             history_path = Path(temporary_directory) / "history.enc"

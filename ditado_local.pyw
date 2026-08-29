@@ -479,6 +479,8 @@ class DitadoLocalApp:
         self.hotkey_session_counter = 0
         self.dictation_hotkey_session = None
         self.agent_hotkey_session = None
+        self.hotkey_lock = threading.RLock()
+        self.cancelled_agent_hotkey_sessions = set()
         self.active_hotkey_session = None
         self.latest_dictation_hotkey_session = 0
         self.agent_chat_window = None
@@ -2476,6 +2478,31 @@ class DitadoLocalApp:
             for virtual_key in self.LEFT_AGENT_VIRTUAL_KEYS
         )
 
+    def _get_hotkey_lock(self):
+        hotkey_lock = getattr(self, "hotkey_lock", None)
+        if hotkey_lock is None:
+            hotkey_lock = threading.RLock()
+            self.hotkey_lock = hotkey_lock
+        return hotkey_lock
+
+    def _cancel_agent_hotkey_for_secure_attention(self):
+        with self._get_hotkey_lock():
+            session_id = getattr(self, "agent_hotkey_session", None)
+            if session_id is None:
+                return
+            self.agent_chord_active = False
+            self.agent_hotkey_session = None
+            cancelled_sessions = getattr(
+                self,
+                "cancelled_agent_hotkey_sessions",
+                None,
+            )
+            if cancelled_sessions is None:
+                cancelled_sessions = set()
+                self.cancelled_agent_hotkey_sessions = cancelled_sessions
+            cancelled_sessions.add(session_id)
+            self.events.put(("cancel", ("agent", session_id)))
+
     def _next_hotkey_session(self):
         self.hotkey_session_counter = (
             getattr(self, "hotkey_session_counter", 0) + 1
@@ -2488,6 +2515,10 @@ class DitadoLocalApp:
         self.keys_down.add(key)
         ctrl_down = bool(self.keys_down & self.CTRL_KEYS)
         left_agent_down = self.LEFT_AGENT_KEYS.issubset(self.keys_down)
+
+        if key == pynput_keyboard.Key.delete and left_agent_down:
+            self._cancel_agent_hotkey_for_secure_attention()
+            return
 
         if key == pynput_keyboard.Key.space and ctrl_down:
             if not self.dictation_chord_active:
@@ -2704,6 +2735,35 @@ class DitadoLocalApp:
             args=(audio, self.recording_mode),
             daemon=True,
         ).start()
+
+    def _cancel_recording(self):
+        self.active_hotkey_session = None
+        if not self.recording:
+            return
+        self.recording = False
+        self.processing = False
+        self.agent_selection_cancelled.set()
+        self.selection_ready.set()
+        self.agent_selected_text = ""
+        stream = self.stream
+        self.stream = None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+        self.audio_chunks = []
+        self.current_level = 0.0
+        self.playback_mute.restore()
+        try:
+            self.root.after(500, self.playback_mute.reassert_defaults)
+        except Exception:
+            pass
+        self.status.set("Pronto. Gravação cancelada.")
+        self.status_dot.configure(text_color="#4ADE80")
+        self.ready_badge.configure(text="PRONTO", fg_color="#173727")
+        self.overlay.hide()
 
     def _resample_to_16khz(self, audio):
         if self.input_sample_rate == SAMPLE_RATE:
@@ -3281,6 +3341,14 @@ class DitadoLocalApp:
                 break
             if event == "start":
                 mode, session_id = payload
+                cancelled_sessions = getattr(
+                    self,
+                    "cancelled_agent_hotkey_sessions",
+                    set(),
+                )
+                if mode == "agent" and session_id in cancelled_sessions:
+                    cancelled_sessions.discard(session_id)
+                    continue
                 latest_dictation_session = getattr(
                     self,
                     "latest_dictation_hotkey_session",
@@ -3309,6 +3377,16 @@ class DitadoLocalApp:
                 if getattr(self, "active_hotkey_session", None) != payload:
                     continue
                 self.stop_recording()
+            elif event == "cancel":
+                mode, session_id = payload
+                cancelled_sessions = getattr(
+                    self,
+                    "cancelled_agent_hotkey_sessions",
+                    set(),
+                )
+                if getattr(self, "active_hotkey_session", None) == payload:
+                    self._cancel_recording()
+                cancelled_sessions.discard(session_id)
             elif event == "status":
                 self.status.set(payload)
             elif event == "pipeline_status":
