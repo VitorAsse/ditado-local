@@ -21,8 +21,10 @@ instalação ou primeira execução.
 | Pacote | Versão fixada | Licença declarada |
 | --- | --- | --- |
 | customtkinter | 6.0.0 | CC0-1.0 |
+| cryptography | 50.0.1 | Apache-2.0 OR BSD-3-Clause |
 | ctranslate2 | 4.4.0 | MIT |
 | faster-whisper | 1.2.1 | MIT |
+| httpx | 0.28.1 | BSD-3-Clause |
 | numpy | 2.4.6 | BSD-3-Clause e componentes compatíveis |
 | Pillow | 12.3.0 | MIT-CMU |
 | pycaw | 20251023 | MIT |

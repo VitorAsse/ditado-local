@@ -6,7 +6,7 @@ import os
 import threading
 import uuid
 from ctypes import wintypes
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -97,7 +97,8 @@ def unprotect_for_current_user(data):
 
 
 def atomic_write_text(path, content):
-    APP_ROOT.mkdir(parents=True, exist_ok=True)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
     temporary_path.write_text(content, encoding="utf-8")
     os.replace(temporary_path, path)
@@ -119,20 +120,68 @@ class AppConfig:
         "startup_enabled": True,
     }
 
-    def __init__(self):
+    SYNCED_PREFERENCE_KEYS = {
+        "auto_paste",
+        "grammar_correction",
+        "capture_clipboard_history",
+        "transcription_language",
+        "history_limit",
+    }
+
+    def __init__(self, path=None):
         self.lock = threading.RLock()
+        self.path = Path(path) if path is not None else CONFIG_PATH
         self.data = copy.deepcopy(self.DEFAULTS)
         self.load()
 
+    @staticmethod
+    def _now():
+        return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+    def _normalize_sync_metadata(self):
+        changed = False
+        preference_timestamps = self.data.get("_cloud_preference_timestamps")
+        if not isinstance(preference_timestamps, dict):
+            preference_timestamps = {}
+            self.data["_cloud_preference_timestamps"] = preference_timestamps
+            changed = True
+        now = self._now()
+        for key in self.SYNCED_PREFERENCE_KEYS:
+            if not isinstance(preference_timestamps.get(key), str):
+                preference_timestamps[key] = now
+                changed = True
+
+        for collection_name in ("corrections", "rules", "skills"):
+            normalized = []
+            for raw_item in self.data.get(collection_name, []):
+                if not isinstance(raw_item, dict):
+                    changed = True
+                    continue
+                item = dict(raw_item)
+                if not isinstance(item.get("id"), str) or not item["id"]:
+                    item["id"] = str(uuid.uuid4())
+                    changed = True
+                if not isinstance(item.get("updated_at"), str):
+                    item["updated_at"] = now
+                    changed = True
+                normalized.append(item)
+            if normalized != self.data.get(collection_name, []):
+                self.data[collection_name] = normalized
+                changed = True
+        return changed
+
     def load(self):
         with self.lock:
-            if not CONFIG_PATH.exists():
+            if not self.path.exists():
+                self._normalize_sync_metadata()
                 self.save()
                 return
             try:
-                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                loaded = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     self.data.update(loaded)
+                if self._normalize_sync_metadata():
+                    self.save()
             except (OSError, json.JSONDecodeError):
                 self.data = copy.deepcopy(self.DEFAULTS)
                 self.save()
@@ -140,9 +189,22 @@ class AppConfig:
     def save(self):
         with self.lock:
             atomic_write_text(
-                CONFIG_PATH,
+                self.path,
                 json.dumps(self.data, ensure_ascii=False, indent=2),
             )
+
+    def rebind(self, path, initial_data=None):
+        with self.lock:
+            self.path = Path(path)
+            self.data = copy.deepcopy(self.DEFAULTS)
+            if self.path.exists():
+                self.load()
+            elif isinstance(initial_data, dict):
+                self.data.update(copy.deepcopy(initial_data))
+                self._normalize_sync_metadata()
+                self.save()
+            else:
+                self.save()
 
     def get(self, key, default=None):
         with self.lock:
@@ -151,6 +213,12 @@ class AppConfig:
     def set(self, key, value):
         with self.lock:
             self.data[key] = value
+            if key in self.SYNCED_PREFERENCE_KEYS:
+                timestamps = self.data.setdefault(
+                    "_cloud_preference_timestamps",
+                    {},
+                )
+                timestamps[key] = self._now()
             self.save()
 
     def add_correction(self, wrong, correct):
@@ -159,12 +227,33 @@ class AppConfig:
         if not normalized_wrong or not normalized_correct:
             return False
         with self.lock:
+            existing = next(
+                (
+                    item
+                    for item in self.data.get("corrections", [])
+                    if item.get("wrong", "").casefold()
+                    == normalized_wrong.casefold()
+                ),
+                None,
+            )
             corrections = [
                 item
                 for item in self.data.get("corrections", [])
                 if item.get("wrong", "").casefold() != normalized_wrong.casefold()
             ]
-            corrections.insert(0, {"wrong": normalized_wrong, "correct": normalized_correct})
+            corrections.insert(
+                0,
+                {
+                    "id": (
+                        existing.get("id")
+                        if isinstance(existing, dict) and existing.get("id")
+                        else str(uuid.uuid4())
+                    ),
+                    "wrong": normalized_wrong,
+                    "correct": normalized_correct,
+                    "updated_at": self._now(),
+                },
+            )
             self.data["corrections"] = corrections[:200]
             self.save()
         return True
@@ -200,6 +289,7 @@ class AppConfig:
                 "name": normalized_name[:80],
                 "instructions": normalized_instructions[:4000],
                 "enabled": bool(existing.get("enabled", True)) if existing else True,
+                "updated_at": self._now(),
             }
             rules = [
                 item
@@ -225,6 +315,7 @@ class AppConfig:
             for item in self.data.get("rules", []):
                 if item.get("id") == rule_id:
                     item["enabled"] = bool(enabled)
+                    item["updated_at"] = self._now()
                     self.save()
                     return True
         return False
@@ -285,6 +376,7 @@ class AppConfig:
                 "instructions": normalized_instructions[:4000],
                 "examples": normalized_examples,
                 "enabled": bool(existing.get("enabled", True)) if existing else True,
+                "updated_at": self._now(),
             }
             skills = [
                 item
@@ -310,6 +402,7 @@ class AppConfig:
             for item in self.data.get("skills", []):
                 if item.get("id") == skill_id:
                     item["enabled"] = bool(enabled)
+                    item["updated_at"] = self._now()
                     self.save()
                     return True
         return False
@@ -325,24 +418,79 @@ class AppConfig:
             return [item for item in skills if item.get("enabled", True)]
         return skills
 
+    def cloud_snapshot(self):
+        with self.lock:
+            if self._normalize_sync_metadata():
+                self.save()
+            timestamps = self.data.get("_cloud_preference_timestamps", {})
+            return {
+                "preferences": [
+                    {
+                        "id": key,
+                        "key": key,
+                        "value": copy.deepcopy(self.data.get(key)),
+                        "updated_at": timestamps.get(key, self._now()),
+                    }
+                    for key in sorted(self.SYNCED_PREFERENCE_KEYS)
+                ],
+                "corrections": copy.deepcopy(self.data.get("corrections", [])),
+                "rules": copy.deepcopy(self.data.get("rules", [])),
+                "skills": copy.deepcopy(self.data.get("skills", [])),
+            }
+
+    def replace_cloud_snapshot(self, snapshot):
+        if not isinstance(snapshot, dict):
+            return
+        with self.lock:
+            preference_timestamps = self.data.setdefault(
+                "_cloud_preference_timestamps",
+                {},
+            )
+            for item in snapshot.get("preferences", []):
+                key = item.get("key") if isinstance(item, dict) else None
+                if key in self.SYNCED_PREFERENCE_KEYS:
+                    self.data[key] = copy.deepcopy(item.get("value"))
+                    preference_timestamps[key] = item.get(
+                        "updated_at",
+                        self._now(),
+                    )
+            for collection_name in ("corrections", "rules", "skills"):
+                collection = snapshot.get(collection_name)
+                if isinstance(collection, list):
+                    self.data[collection_name] = copy.deepcopy(collection)
+            self._normalize_sync_metadata()
+            self.save()
+
 
 class HistoryStore:
-    def __init__(self, limit=150):
+    def __init__(self, limit=150, path=None):
         self.limit = limit
         self.lock = threading.RLock()
+        self.path = Path(path) if path is not None else HISTORY_PATH
         self.entries = []
         self.load()
 
     def load(self):
         with self.lock:
-            if not HISTORY_PATH.exists():
+            if not self.path.exists():
                 return
             try:
-                encrypted = base64.b64decode(HISTORY_PATH.read_text(encoding="ascii"))
+                encrypted = base64.b64decode(self.path.read_text(encoding="ascii"))
                 payload = unprotect_for_current_user(encrypted)
                 loaded = json.loads(payload.decode("utf-8"))
                 if isinstance(loaded, list):
                     self.entries = loaded[: self.limit]
+                    changed = False
+                    now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+                    for entry in self.entries:
+                        if not isinstance(entry.get("id"), str) or not entry["id"]:
+                            entry["id"] = str(uuid.uuid4())
+                            changed = True
+                        if not isinstance(entry.get("updated_at"), str):
+                            entry["updated_at"] = entry.get("timestamp") or now
+                            changed = True
+                    if changed:
+                        self.save()
             except Exception:
                 self.entries = []
 
@@ -350,7 +498,17 @@ class HistoryStore:
         with self.lock:
             payload = json.dumps(self.entries, ensure_ascii=False).encode("utf-8")
             encrypted = protect_for_current_user(payload)
-            atomic_write_text(HISTORY_PATH, base64.b64encode(encrypted).decode("ascii"))
+            atomic_write_text(self.path, base64.b64encode(encrypted).decode("ascii"))
+
+    def rebind(self, path, initial_entries=None):
+        with self.lock:
+            self.path = Path(path)
+            self.entries = []
+            if self.path.exists():
+                self.load()
+            elif isinstance(initial_entries, list):
+                self.entries = copy.deepcopy(initial_entries)[: self.limit]
+                self.save()
 
     def add(self, text, source, conversation=None):
         if not isinstance(text, str):
@@ -362,6 +520,9 @@ class HistoryStore:
             if self.entries and self.entries[0].get("text") == normalized:
                 entry = self.entries[0]
                 entry["timestamp"] = datetime.now().isoformat(timespec="seconds")
+                entry["updated_at"] = datetime.now(timezone.utc).isoformat(
+                    timespec="microseconds"
+                )
                 entry["source"] = source
             else:
                 entry = {
@@ -369,6 +530,9 @@ class HistoryStore:
                     "text": normalized,
                     "source": source,
                     "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(
+                        timespec="microseconds"
+                    ),
                 }
                 self.entries.insert(0, entry)
             if isinstance(conversation, dict):
@@ -406,6 +570,9 @@ class HistoryStore:
                 json.dumps(conversation, ensure_ascii=False)
             )
             entry["timestamp"] = datetime.now().isoformat(timespec="seconds")
+            entry["updated_at"] = datetime.now(timezone.utc).isoformat(
+                timespec="microseconds"
+            )
             self.entries.remove(entry)
             self.entries.insert(0, entry)
             self.entries = self.entries[: self.limit]
@@ -420,6 +587,13 @@ class HistoryStore:
     def all(self):
         with self.lock:
             return [dict(entry) for entry in self.entries]
+
+    def replace_entries(self, entries):
+        if not isinstance(entries, list):
+            return
+        with self.lock:
+            self.entries = copy.deepcopy(entries)[: self.limit]
+            self.save()
 
     def latest_transcription(self):
         with self.lock:

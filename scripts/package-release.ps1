@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.2.2"
+    [string]$Version = "0.3.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,6 +53,7 @@ $packageFiles = @(
     "ditado_ai.py",
     "ditado_audio.py",
     "ditado_chat.py",
+    "ditado_cloud.py",
     "ditado_local.pyw",
     "ditado_storage.py",
     "ditado_theme.py",
@@ -70,6 +71,42 @@ foreach ($fileName in $packageFiles) {
     }
     Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $stagingRoot $fileName)
 }
+
+$supabaseSource = Join-Path $repositoryRoot "supabase"
+$supabaseDestination = Join-Path $stagingRoot "supabase"
+if (-not (Test-Path -LiteralPath (Join-Path $supabaseSource "ditado_cloud_schema.sql"))) {
+    throw "Schema do Supabase ausente: supabase\ditado_cloud_schema.sql"
+}
+New-Item -ItemType Directory -Path $supabaseDestination -Force | Out-Null
+Copy-Item `
+    -LiteralPath (Join-Path $supabaseSource "ditado_cloud_schema.sql") `
+    -Destination (Join-Path $supabaseDestination "ditado_cloud_schema.sql")
+
+$docsSource = Join-Path $repositoryRoot "docs"
+$docsDestination = Join-Path $stagingRoot "docs"
+if (-not (Test-Path -LiteralPath (Join-Path $docsSource "CLOUD_SYNC.md"))) {
+    throw "Documentacao de nuvem ausente: docs\CLOUD_SYNC.md"
+}
+New-Item -ItemType Directory -Path $docsDestination -Force | Out-Null
+Copy-Item `
+    -LiteralPath (Join-Path $docsSource "CLOUD_SYNC.md") `
+    -Destination (Join-Path $docsDestination "CLOUD_SYNC.md")
+
+$scriptsSource = Join-Path $repositoryRoot "scripts"
+$scriptsDestination = Join-Path $stagingRoot "scripts"
+if (-not (Test-Path -LiteralPath (Join-Path $scriptsSource "configure-supabase-secure.ps1"))) {
+    throw "Bootstrap seguro ausente: scripts\configure-supabase-secure.ps1"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $scriptsSource "configure-supabase-secure.cmd"))) {
+    throw "Launcher seguro ausente: scripts\configure-supabase-secure.cmd"
+}
+New-Item -ItemType Directory -Path $scriptsDestination -Force | Out-Null
+Copy-Item `
+    -LiteralPath (Join-Path $scriptsSource "configure-supabase-secure.ps1") `
+    -Destination (Join-Path $scriptsDestination "configure-supabase-secure.ps1")
+Copy-Item `
+    -LiteralPath (Join-Path $scriptsSource "configure-supabase-secure.cmd") `
+    -Destination (Join-Path $scriptsDestination "configure-supabase-secure.cmd")
 
 $assetsSource = Join-Path $repositoryRoot "assets"
 $assetsDestination = Join-Path $stagingRoot "assets"

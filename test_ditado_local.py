@@ -164,12 +164,19 @@ class PlaybackMuteIntegrationTests(unittest.TestCase):
         app.current_level = 0.0
         app.agent_selected_text = ""
         app.selection_ready = Mock()
+        calls = []
         app._open_input_stream_with_recovery = Mock(
-            return_value=({"sample_rate": 48_000}, object())
+            side_effect=lambda: (
+                calls.append("open-microphone")
+                or ({"sample_rate": 48_000}, object())
+            )
         )
         app.mute_playback_while_recording = Mock()
         app.mute_playback_while_recording.get.return_value = True
         app.playback_mute = Mock()
+        app.playback_mute.mute_for_recording.side_effect = lambda: calls.append(
+            "snapshot-and-mute"
+        )
         app.status = Mock()
         app.status_dot = Mock()
         app.ready_badge = Mock()
@@ -180,6 +187,10 @@ class PlaybackMuteIntegrationTests(unittest.TestCase):
         app.start_recording("dictation")
 
         app.playback_mute.mute_for_recording.assert_called_once_with()
+        self.assertEqual(
+            ["snapshot-and-mute", "open-microphone"],
+            calls,
+        )
 
     def test_starting_dictation_keeps_playback_when_disabled(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
@@ -232,19 +243,32 @@ class PlaybackMuteIntegrationTests(unittest.TestCase):
 
         app.playback_mute.restore.assert_called_once_with()
 
-    def test_stopping_recording_restores_playback_before_processing(self):
+    def test_stopping_recording_closes_microphone_before_restoring_playback(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
         app.recording = True
         app.processing = False
+        calls = []
         app.stream = Mock()
+        app.stream.stop.side_effect = lambda: calls.append("stop-microphone")
+        app.stream.close.side_effect = lambda: calls.append("close-microphone")
         app.audio_chunks = [DITADO_LOCAL.np.zeros(10, dtype=DITADO_LOCAL.np.float32)]
         app.input_sample_rate = 16_000
         app.playback_mute = Mock()
+        app.playback_mute.restore.side_effect = lambda: calls.append("restore-output")
         app._show_error = Mock()
+        app.root = Mock()
 
         app.stop_recording()
 
         app.playback_mute.restore.assert_called_once_with()
+        self.assertEqual(
+            ["stop-microphone", "close-microphone", "restore-output"],
+            calls,
+        )
+        app.root.after.assert_called_once_with(
+            500,
+            app.playback_mute.reassert_defaults,
+        )
 
     def test_exiting_the_app_restores_playback(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
@@ -289,7 +313,11 @@ class VoiceSkillRoutingTests(unittest.TestCase):
 
     def test_grammar_review_preserves_the_text_language(self):
         client = OllamaClient()
-        client.chat = Mock(return_value="This text is correct.")
+        client.chat = Mock(
+            return_value=json.dumps(
+                {"corrected_text": "This text is correct."}
+            )
+        )
 
         result = client.correct_grammar("This text are correct.")
 
@@ -315,6 +343,31 @@ class VoiceSkillRoutingTests(unittest.TestCase):
                 "Transforme esse parágrafo em uma lista curta.",
                 "- Transforme esse parágrafo em uma lista curta.",
             ),
+            (
+                "Qual é a capital da França?",
+                json.dumps(
+                    {"corrected_text": "A capital da França é Paris."},
+                    ensure_ascii=False,
+                ),
+            ),
+            (
+                "Quanto é dois mais dois?",
+                json.dumps(
+                    {"corrected_text": "Dois mais dois é quatro."},
+                    ensure_ascii=False,
+                ),
+            ),
+            (
+                "Como instalar o programa",
+                json.dumps(
+                    {
+                        "corrected_text": (
+                            "Para instalar o programa, baixe o arquivo."
+                        )
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
         ]
 
         for spoken_text, agent_response in cases:
@@ -325,6 +378,27 @@ class VoiceSkillRoutingTests(unittest.TestCase):
                 result = client.correct_grammar(spoken_text)
 
                 self.assertEqual(spoken_text, result)
+
+    def test_grammar_review_accepts_a_literal_question_correction(self):
+        client = OllamaClient()
+        client.chat = Mock(
+            return_value=json.dumps(
+                {"corrected_text": "Qual é a capital da França?"},
+                ensure_ascii=False,
+            )
+        )
+
+        result = client.correct_grammar("Qual e a capital da França?")
+
+        self.assertEqual("Qual é a capital da França?", result)
+
+    def test_grammar_review_rejects_unstructured_output(self):
+        client = OllamaClient()
+        client.chat = Mock(return_value="This text is correct.")
+
+        result = client.correct_grammar("This text are correct.")
+
+        self.assertEqual("This text are correct.", result)
 
     def test_grammar_review_treats_spoken_text_as_json_data(self):
         client = OllamaClient()
@@ -550,6 +624,92 @@ class AgentConversationTests(unittest.TestCase):
             worker.call_args.kwargs["args"][1],
         )
 
+    def test_ctrl_space_ignores_a_pending_stop_from_the_agent_hotkey(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.keys_down = {
+            DITADO_LOCAL.pynput_keyboard.Key.ctrl_l,
+            DITADO_LOCAL.pynput_keyboard.Key.alt_l,
+        }
+        app.dictation_chord_active = False
+        app.agent_chord_active = True
+        app.hotkey_session_counter = 1
+        app.dictation_hotkey_session = None
+        app.agent_hotkey_session = 1
+        app.active_hotkey_session = ("agent", 1)
+        app.latest_dictation_hotkey_session = 0
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app.recording = True
+        app.recording_mode = "agent"
+        app.current_level = 0.0
+        app.overlay = Mock()
+        app.root = Mock()
+        app.closing = True
+
+        def start_recording(mode):
+            if mode == "dictation":
+                app.recording_mode = "dictation"
+
+        def stop_recording():
+            app.recording = False
+            app.active_hotkey_session = None
+
+        app.start_recording = Mock(side_effect=start_recording)
+        app.stop_recording = Mock(side_effect=stop_recording)
+
+        app._on_key_release(DITADO_LOCAL.pynput_keyboard.Key.alt_l)
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.space)
+        with patch.object(DITADO_LOCAL, "SHOW_EVENT_HANDLE", 0, create=True):
+            app._process_events()
+
+        app.stop_recording.assert_not_called()
+        app.start_recording.assert_called_once_with("dictation")
+        self.assertEqual("dictation", app.recording_mode)
+        self.assertEqual(("dictation", 2), app.active_hotkey_session)
+
+        app._on_key_release(DITADO_LOCAL.pynput_keyboard.Key.space)
+        with patch.object(DITADO_LOCAL, "SHOW_EVENT_HANDLE", 0, create=True):
+            app._process_events()
+
+        app.stop_recording.assert_called_once_with()
+
+    def test_fast_ctrl_space_keeps_its_start_and_stop_in_the_same_session(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.keys_down = set()
+        app.dictation_chord_active = False
+        app.agent_chord_active = False
+        app.hotkey_session_counter = 0
+        app.dictation_hotkey_session = None
+        app.agent_hotkey_session = None
+        app.active_hotkey_session = None
+        app.latest_dictation_hotkey_session = 0
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app.recording = False
+        app.recording_mode = "dictation"
+        app.current_level = 0.0
+        app.overlay = Mock()
+        app.root = Mock()
+        app.closing = True
+
+        def start_recording(mode):
+            app.recording = True
+            app.recording_mode = mode
+
+        def stop_recording():
+            app.recording = False
+            app.active_hotkey_session = None
+
+        app.start_recording = Mock(side_effect=start_recording)
+        app.stop_recording = Mock(side_effect=stop_recording)
+
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.ctrl_l)
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.space)
+        app._on_key_release(DITADO_LOCAL.pynput_keyboard.Key.space)
+        with patch.object(DITADO_LOCAL, "SHOW_EVENT_HANDLE", 0, create=True):
+            app._process_events()
+
+        app.start_recording.assert_called_once_with("dictation")
+        app.stop_recording.assert_called_once_with()
+
     def test_cancelled_agent_selection_capture_cannot_publish_selection(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
         app.ignore_clipboard_until = 0.0
@@ -597,7 +757,10 @@ class AgentConversationTests(unittest.TestCase):
         while not app.events.empty():
             emitted_events.append(app.events.get())
 
-        self.assertEqual([("start", "dictation")], emitted_events)
+        self.assertEqual(
+            [("start", ("dictation", 1))],
+            emitted_events,
+        )
 
     def test_physical_hotkeys_are_processed_while_injected_keys_are_ignored(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
@@ -609,7 +772,7 @@ class AgentConversationTests(unittest.TestCase):
 
         app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.ctrl_l)
         app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.alt_l)
-        self.assertEqual(("start", "agent"), app.events.get())
+        self.assertEqual(("start", ("agent", 1)), app.events.get())
 
         app._on_key_release(
             DITADO_LOCAL.pynput_keyboard.Key.alt_l,
@@ -622,7 +785,7 @@ class AgentConversationTests(unittest.TestCase):
             DITADO_LOCAL.pynput_keyboard.Key.alt_l,
             injected=False,
         )
-        self.assertEqual(("stop", None), app.events.get())
+        self.assertEqual(("stop", ("agent", 1)), app.events.get())
         self.assertFalse(app.agent_chord_active)
 
         app._on_key_release(
@@ -638,7 +801,7 @@ class AgentConversationTests(unittest.TestCase):
             injected=False,
         )
 
-        self.assertEqual(("start", "dictation"), app.events.get())
+        self.assertEqual(("start", ("dictation", 2)), app.events.get())
 
     def test_agent_result_overlay_opens_chat_when_action_is_clicked(self):
         root = DITADO_LOCAL.ctk.CTk()
@@ -740,8 +903,8 @@ class AgentConversationTests(unittest.TestCase):
         app._on_key_release(DITADO_LOCAL.pynput_keyboard.Key.alt_l)
         stop_event = app.events.get()
 
-        self.assertEqual(("start", "agent"), start_event)
-        self.assertEqual(("stop", None), stop_event)
+        self.assertEqual(("start", ("agent", 1)), start_event)
+        self.assertEqual(("stop", ("agent", 1)), stop_event)
 
     def test_latest_agent_conversation_ignores_newer_non_agent_entries(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1063,6 +1226,17 @@ class AgentConversationTests(unittest.TestCase):
 
         app._copy_to_clipboard.assert_called_once_with("Resposta refinada")
         app.status.set.assert_called_once_with("Item do histórico copiado.")
+
+
+class InstallerStartupTests(unittest.TestCase):
+    def test_windows_startup_is_enabled_by_default_and_can_be_disabled(self):
+        installer = APP_PATH.with_name("install.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("[switch]$StartWithWindows = $true", installer)
+        self.assertIn('"Ditado Local.lnk"', installer)
+        self.assertIn("launch_ditado_background.vbs", installer)
+        self.assertIn("elseif (Test-Path -LiteralPath $startupShortcutPath", installer)
+        self.assertIn("Remove-Item -LiteralPath $startupShortcutPath", installer)
 
 
 if __name__ == "__main__":

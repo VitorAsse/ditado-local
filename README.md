@@ -16,6 +16,8 @@ Faster Whisper e Ollama.
 - Continue respostas do agente em um mini chat aberto pela aba `Histórico`.
 - Use CPU automaticamente quando a aceleração por GPU não estiver disponível.
 - Mantenha um histórico local protegido pela conta atual do Windows.
+- Sincronize opcionalmente correções, regras, skills e histórico entre PCs, com
+  contas separadas e criptografia ponta a ponta.
 
 Novas instalações não recebem regras, termos ou preferências pessoais do autor.
 
@@ -44,15 +46,16 @@ Baixe o arquivo `DitadoLocal-<versão>.zip` na página de Releases, extraia e ex
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Para iniciar automaticamente com o Windows:
+O instalador habilita a inicialização automática com o Windows por padrão. Para
+instalar sem esse comportamento:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -StartWithWindows
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -StartWithWindows:$false
 ```
 
 O instalador cria um ambiente Python isolado em
 `%LOCALAPPDATA%\faster-whisper`, preserva configurações existentes e adiciona
-`Ditado Local` ao menu Iniciar.
+`Ditado Local` ao menu Iniciar e à pasta Inicializar.
 
 ## Como usar
 
@@ -101,6 +104,26 @@ Skills são comportamentos ativados por nome ou frase. Use quando uma regra não
 ser aplicada o tempo todo, como formatação de resumo semanal ou resposta profissional.
 Sem um gatilho correspondente, nenhuma skill é adicionada ao agente generalista.
 
+### Nuvem e múltiplas contas
+
+A aba `Nuvem` conecta um projeto Supabase dedicado, cria ou acessa uma conta e
+sincroniza os dados automaticamente. Cada usuário possui um perfil isolado; o mesmo PC
+pode guardar mais de uma conta e alternar entre elas. No primeiro acesso é exibida uma
+chave de recuperação que deve ser guardada fora do computador.
+
+O recurso exige que o responsável pelo aplicativo provisione o schema e informe a
+Project URL e uma chave publicável. Veja o guia completo em
+[`docs/CLOUD_SYNC.md`](docs/CLOUD_SYNC.md).
+
+Um projeto existente também pode ser configurado por um terminal protegido:
+
+```powershell
+powershell -File .\scripts\configure-supabase-secure.ps1
+```
+
+O Personal Access Token é lido como `SecureString`, permanece apenas na memória do
+processo e não é armazenado. O aplicativo recebe somente a URL e a chave publicável.
+
 ## Idiomas
 
 O aplicativo oferece detecção automática e seleção explícita de português, inglês,
@@ -114,9 +137,12 @@ idioma por configuração manual.
 - Ao continuar uma conversa, o texto original e as respostas anteriores são reenviados
   ao mesmo endpoint para manter o contexto.
 - O histórico é criptografado com a proteção de dados da conta atual do Windows.
+- Quando a nuvem é ativada, textos são cifrados com AES-256-GCM antes do envio; áudio
+  bruto e configurações de hardware continuam somente no dispositivo.
 - A captura de textos copiados por outros aplicativos começa desativada.
 - Não existe telemetria no aplicativo.
 - PyPI e Hugging Face são acessados para baixar dependências e modelos.
+- O Supabase é acessado somente depois que uma conexão é configurada na aba `Nuvem`.
 
 Se `DITADO_OLLAMA_URL` apontar para outra máquina ou serviço, o texto será enviado para
 esse destino. O usuário é responsável pela privacidade desse endpoint.
@@ -159,7 +185,7 @@ py -3.11 -m venv .venv
 Para montar o arquivo de uma Release:
 
 ```powershell
-powershell -File .\scripts\package-release.ps1 -Version 0.2.2
+powershell -File .\scripts\package-release.ps1 -Version 0.3.0
 ```
 
 ## Licença

@@ -61,6 +61,13 @@ from ditado_ai import (
 )
 from ditado_audio import PlaybackMuteController
 from ditado_chat import AgentChatWindow
+from ditado_cloud import (
+    CloudAuthenticationError,
+    CloudError,
+    CloudStateStore,
+    CloudSyncManager,
+    RecoveryKeyRequired,
+)
 from ditado_storage import AppConfig, HistoryStore
 from ditado_theme import (
     APP_COLORS,
@@ -418,8 +425,18 @@ class DitadoLocalApp:
         initialize_app_font()
 
         self.start_hidden = "--background" in sys.argv
-        self.config = AppConfig()
-        self.history = HistoryStore(limit=int(self.config.get("history_limit", 150)))
+        self.cloud_state = CloudStateStore()
+        config_path, history_path = self.cloud_state.active_profile_paths()
+        self.config = AppConfig(path=config_path)
+        self.history = HistoryStore(
+            limit=int(self.config.get("history_limit", 150)),
+            path=history_path,
+        )
+        self.cloud = CloudSyncManager(
+            self.cloud_state,
+            self.config,
+            self.history,
+        )
         self.ollama = OllamaClient()
         self.playback_mute = PlaybackMuteController()
 
@@ -459,6 +476,11 @@ class DitadoLocalApp:
         self.keys_down = set()
         self.dictation_chord_active = False
         self.agent_chord_active = False
+        self.hotkey_session_counter = 0
+        self.dictation_hotkey_session = None
+        self.agent_hotkey_session = None
+        self.active_hotkey_session = None
+        self.latest_dictation_hotkey_session = 0
         self.agent_chat_window = None
         self.agent_chat_entry_id = None
         self.ignore_clipboard_until = 0.0
@@ -488,6 +510,12 @@ class DitadoLocalApp:
         self.agent_status_text = tk.StringVar(value=self.agent_backend)
         self.rules_status_text = tk.StringVar(value=self._rules_status())
         self.skills_status_text = tk.StringVar(value=self._skills_status())
+        self.cloud_status_text = tk.StringVar(value="Nuvem ainda não configurada.")
+        self.cloud_account_text = tk.StringVar(value="Nenhuma conta conectada")
+        self.cloud_last_sync_text = tk.StringVar(value="Nunca sincronizado")
+        self.cloud_account_ids_by_label = {}
+        self.cloud_devices = []
+        self.cloud_task_in_progress = False
         self.editing_rule_id = None
         self.editing_skill_id = None
 
@@ -510,6 +538,7 @@ class DitadoLocalApp:
         self.root.after(450, self._poll_clipboard)
         self.root.after(700, self._refresh_lazy_views)
         self.root.after(300, self._start_model_preload)
+        self.root.after(1200, self._cloud_auto_sync)
 
     def _get_input_devices(self):
         devices = []
@@ -589,6 +618,7 @@ class DitadoLocalApp:
             "Agente",
             "Regras",
             "Skills",
+            "Nuvem",
         ]:
             self.tabs.add(tab_name)
 
@@ -598,6 +628,7 @@ class DitadoLocalApp:
         self._build_agent_tab(self.tabs.tab("Agente"))
         self._build_rules_tab(self.tabs.tab("Regras"))
         self._build_skills_tab(self.tabs.tab("Skills"))
+        self._build_cloud_tab(self.tabs.tab("Nuvem"))
 
         status_card = ctk.CTkFrame(
             shell,
@@ -1263,6 +1294,277 @@ class DitadoLocalApp:
         self.skills_frame.pack(fill="x", padx=10, pady=(0, 12))
         self._rebuild_skills()
 
+    def _build_cloud_tab(self, tab):
+        canvas = ctk.CTkScrollableFrame(
+            tab,
+            fg_color=APP_COLORS["surface_deep"],
+            corner_radius=0,
+        )
+        canvas.pack(fill="both", expand=True, padx=8, pady=8)
+
+        ctk.CTkLabel(
+            canvas,
+            text="Sincronização privada na nuvem",
+            text_color=APP_COLORS["text_strong"],
+            font=app_font(size=18, weight="bold"),
+        ).pack(anchor="w", padx=10, pady=(8, 3))
+        ctk.CTkLabel(
+            canvas,
+            text=(
+                "Cada conta tem seus próprios dados. Correções, regras, skills, "
+                "preferências e histórico são cifrados neste PC antes do envio. "
+                "Áudio, microfone, modelos e GPU nunca são enviados."
+            ),
+            text_color=APP_COLORS["text_muted"],
+            wraplength=650,
+            justify="left",
+            font=app_font(size=11),
+        ).pack(anchor="w", padx=10)
+
+        backend_card = ctk.CTkFrame(
+            canvas,
+            fg_color=APP_COLORS["surface"],
+            corner_radius=16,
+            border_width=1,
+            border_color=APP_COLORS["border"],
+        )
+        backend_card.pack(fill="x", padx=10, pady=(14, 8))
+        ctk.CTkLabel(
+            backend_card,
+            text="PROJETO SUPABASE",
+            text_color=APP_COLORS["primary"],
+            font=app_font(size=10, weight="bold"),
+        ).pack(anchor="w", padx=14, pady=(12, 7))
+        backend_row = ctk.CTkFrame(backend_card, fg_color="transparent")
+        backend_row.pack(fill="x", padx=14)
+        self.cloud_url_entry = ctk.CTkEntry(
+            backend_row,
+            placeholder_text="https://seu-projeto.supabase.co",
+            height=36,
+            fg_color=APP_COLORS["surface_muted"],
+            border_color=APP_COLORS["border"],
+        )
+        self.cloud_url_entry.pack(side="left", fill="x", expand=True)
+        self.cloud_key_entry = ctk.CTkEntry(
+            backend_row,
+            placeholder_text="sb_publishable_...",
+            show="•",
+            width=250,
+            height=36,
+            fg_color=APP_COLORS["surface_muted"],
+            border_color=APP_COLORS["border"],
+        )
+        self.cloud_key_entry.pack(side="left", padx=(8, 0))
+        ctk.CTkButton(
+            backend_card,
+            text="Salvar conexão",
+            width=120,
+            height=32,
+            corner_radius=9,
+            fg_color=APP_COLORS["surface_muted"],
+            hover_color=APP_COLORS["surface_hover"],
+            command=self._save_cloud_backend,
+        ).pack(anchor="e", padx=14, pady=(8, 12))
+
+        account_card = ctk.CTkFrame(
+            canvas,
+            fg_color=APP_COLORS["surface"],
+            corner_radius=16,
+            border_width=1,
+            border_color=APP_COLORS["border"],
+        )
+        account_card.pack(fill="x", padx=10, pady=8)
+        account_header = ctk.CTkFrame(account_card, fg_color="transparent")
+        account_header.pack(fill="x", padx=14, pady=(12, 7))
+        ctk.CTkLabel(
+            account_header,
+            text="CONTA",
+            text_color=APP_COLORS["accent"],
+            font=app_font(size=10, weight="bold"),
+        ).pack(side="left")
+        self.cloud_account_menu = ctk.CTkOptionMenu(
+            account_header,
+            values=["Nenhuma conta salva"],
+            width=260,
+            height=30,
+            fg_color=APP_COLORS["surface_muted"],
+            button_color=APP_COLORS["primary"],
+            command=self._cloud_account_selected,
+        )
+        self.cloud_account_menu.pack(side="right")
+        login_row = ctk.CTkFrame(account_card, fg_color="transparent")
+        login_row.pack(fill="x", padx=14)
+        self.cloud_email_entry = ctk.CTkEntry(
+            login_row,
+            placeholder_text="seu@email.com",
+            height=36,
+            fg_color=APP_COLORS["surface_muted"],
+            border_color=APP_COLORS["border"],
+        )
+        self.cloud_email_entry.pack(side="left", fill="x", expand=True)
+        self.cloud_password_entry = ctk.CTkEntry(
+            login_row,
+            placeholder_text="Senha (mínimo 8 caracteres)",
+            show="•",
+            width=245,
+            height=36,
+            fg_color=APP_COLORS["surface_muted"],
+            border_color=APP_COLORS["border"],
+        )
+        self.cloud_password_entry.pack(side="left", padx=(8, 0))
+        login_actions = ctk.CTkFrame(account_card, fg_color="transparent")
+        login_actions.pack(fill="x", padx=14, pady=(8, 12))
+        ctk.CTkButton(
+            login_actions,
+            text="Criar conta",
+            width=108,
+            height=32,
+            corner_radius=9,
+            fg_color=APP_COLORS["surface_muted"],
+            hover_color=APP_COLORS["surface_hover"],
+            command=lambda: self._cloud_authenticate(create=True),
+        ).pack(side="right")
+        ctk.CTkButton(
+            login_actions,
+            text="Entrar",
+            width=92,
+            height=32,
+            corner_radius=9,
+            fg_color=APP_COLORS["primary"],
+            hover_color=APP_COLORS["primary_hover"],
+            command=lambda: self._cloud_authenticate(create=False),
+        ).pack(side="right", padx=(0, 8))
+        ctk.CTkButton(
+            login_actions,
+            text="Usar sem conta",
+            width=126,
+            height=32,
+            corner_radius=9,
+            fg_color="#312026",
+            hover_color="#482B35",
+            text_color="#FFB3C0",
+            command=self._cloud_sign_out,
+        ).pack(side="left")
+        ctk.CTkButton(
+            login_actions,
+            text="Reenviar confirmação",
+            width=154,
+            height=32,
+            corner_radius=9,
+            fg_color=APP_COLORS["surface_muted"],
+            hover_color=APP_COLORS["surface_hover"],
+            command=self._cloud_resend_confirmation,
+        ).pack(side="left", padx=(8, 0))
+
+        recovery_card = ctk.CTkFrame(
+            canvas,
+            fg_color=APP_COLORS["surface"],
+            corner_radius=16,
+            border_width=1,
+            border_color=APP_COLORS["border"],
+        )
+        recovery_card.pack(fill="x", padx=10, pady=8)
+        ctk.CTkLabel(
+            recovery_card,
+            text="CHAVE DE RECUPERAÇÃO",
+            text_color="#FBBF24",
+            font=app_font(size=10, weight="bold"),
+        ).pack(anchor="w", padx=14, pady=(12, 3))
+        ctk.CTkLabel(
+            recovery_card,
+            text=(
+                "Necessária somente no primeiro acesso de um novo PC. O servidor "
+                "não consegue recuperar seu conteúdo sem ela."
+            ),
+            text_color=APP_COLORS["text_muted"],
+            wraplength=630,
+            justify="left",
+            font=app_font(size=10),
+        ).pack(anchor="w", padx=14)
+        recovery_row = ctk.CTkFrame(recovery_card, fg_color="transparent")
+        recovery_row.pack(fill="x", padx=14, pady=(8, 12))
+        self.cloud_recovery_entry = ctk.CTkEntry(
+            recovery_row,
+            placeholder_text="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX",
+            height=34,
+            fg_color=APP_COLORS["surface_muted"],
+            border_color=APP_COLORS["border"],
+        )
+        self.cloud_recovery_entry.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(
+            recovery_row,
+            text="Desbloquear",
+            width=108,
+            height=34,
+            corner_radius=9,
+            fg_color="#A16207",
+            hover_color="#B7790A",
+            command=self._cloud_unlock,
+        ).pack(side="right", padx=(8, 0))
+
+        sync_card = ctk.CTkFrame(
+            canvas,
+            fg_color=APP_COLORS["surface"],
+            corner_radius=16,
+            border_width=1,
+            border_color=APP_COLORS["border"],
+        )
+        sync_card.pack(fill="x", padx=10, pady=8)
+        sync_body = ctk.CTkFrame(sync_card, fg_color="transparent")
+        sync_body.pack(fill="x", padx=14, pady=12)
+        sync_text = ctk.CTkFrame(sync_body, fg_color="transparent")
+        sync_text.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(
+            sync_text,
+            textvariable=self.cloud_account_text,
+            text_color=APP_COLORS["text_strong"],
+            font=app_font(size=12, weight="bold"),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            sync_text,
+            textvariable=self.cloud_status_text,
+            text_color=APP_COLORS["text_muted"],
+            font=app_font(size=10),
+        ).pack(anchor="w", pady=(3, 0))
+        ctk.CTkLabel(
+            sync_text,
+            textvariable=self.cloud_last_sync_text,
+            text_color=APP_COLORS["text_subtle"],
+            font=app_font(size=9),
+        ).pack(anchor="w", pady=(2, 0))
+        ctk.CTkButton(
+            sync_body,
+            text="Sincronizar agora",
+            width=132,
+            height=36,
+            corner_radius=10,
+            fg_color=APP_COLORS["primary"],
+            hover_color=APP_COLORS["primary_hover"],
+            command=self._cloud_sync_now,
+        ).pack(side="right")
+
+        devices_header = ctk.CTkFrame(canvas, fg_color="transparent")
+        devices_header.pack(fill="x", padx=10, pady=(10, 4))
+        ctk.CTkLabel(
+            devices_header,
+            text="DISPOSITIVOS DA CONTA",
+            text_color=APP_COLORS["text_subtle"],
+            font=app_font(size=10, weight="bold"),
+        ).pack(side="left")
+        ctk.CTkButton(
+            devices_header,
+            text="Atualizar",
+            width=80,
+            height=28,
+            corner_radius=8,
+            fg_color=APP_COLORS["surface_muted"],
+            hover_color=APP_COLORS["surface_hover"],
+            command=self._cloud_load_devices,
+        ).pack(side="right")
+        self.cloud_devices_frame = ctk.CTkFrame(canvas, fg_color="transparent")
+        self.cloud_devices_frame.pack(fill="x", padx=10, pady=(0, 12))
+        self._refresh_cloud_view()
+
     def _device_label(self, device):
         return f"{device['index']}: {device['name']}"
 
@@ -1767,11 +2069,418 @@ class DitadoLocalApp:
                 command=lambda skill_id=skill.get("id"): self._remove_skill(skill_id),
             ).pack(side="right", padx=(0, 7))
 
+    def _refresh_cloud_view(self):
+        cloud_status = self.cloud.status()
+        backend = self.cloud_state.backend()
+        if hasattr(self, "cloud_url_entry") and not self.cloud_url_entry.get():
+            self.cloud_url_entry.insert(0, backend.get("url", ""))
+        if hasattr(self, "cloud_key_entry") and not self.cloud_key_entry.get():
+            self.cloud_key_entry.insert(0, backend.get("publishable_key", ""))
+
+        accounts = cloud_status.get("accounts", [])
+        self.cloud_account_ids_by_label = {}
+        labels = []
+        active_label = "Nenhuma conta ativa"
+        for account in accounts:
+            label = f"{account['email']} · {account['user_id'][:8]}"
+            labels.append(label)
+            self.cloud_account_ids_by_label[label] = account["user_id"]
+            if account.get("active"):
+                active_label = label
+        menu_values = labels or ["Nenhuma conta salva"]
+        if hasattr(self, "cloud_account_menu"):
+            self.cloud_account_menu.configure(values=menu_values)
+            self.cloud_account_menu.set(
+                active_label if active_label in menu_values else menu_values[0]
+            )
+
+        if not cloud_status["configured"]:
+            self.cloud_account_text.set("Nuvem ainda não configurada")
+            self.cloud_status_text.set(
+                "Informe o projeto Supabase dedicado ao Ditado Local."
+            )
+        elif not cloud_status["signed_in"]:
+            self.cloud_account_text.set("Nenhuma conta conectada")
+            self.cloud_status_text.set(
+                "Entre, crie uma conta ou selecione uma conta salva neste PC."
+            )
+        else:
+            self.cloud_account_text.set(cloud_status["email"])
+            if cloud_status["has_local_key"]:
+                pending = cloud_status.get("pending", 0)
+                self.cloud_status_text.set(
+                    "Sincronização automática ativa"
+                    + (f" · {pending} alteração(ões) pendente(s)" if pending else "")
+                )
+            else:
+                self.cloud_status_text.set(
+                    "Digite a chave de recuperação para abrir os dados desta conta."
+                )
+
+        last_sync = cloud_status.get("last_sync", "")
+        if last_sync:
+            readable = last_sync.replace("T", " ").replace("+00:00", " UTC")
+            self.cloud_last_sync_text.set(f"Última sincronização: {readable}")
+        else:
+            self.cloud_last_sync_text.set("Nunca sincronizado neste PC")
+
+    def _save_cloud_backend(self):
+        try:
+            self.cloud.configure_backend(
+                self.cloud_url_entry.get(),
+                self.cloud_key_entry.get(),
+            )
+        except CloudError as error:
+            self.cloud_status_text.set(str(error))
+            return
+        self.cloud_status_text.set("Conexão salva com proteção do Windows.")
+        self.status.set("Projeto de nuvem configurado.")
+        self._refresh_cloud_view()
+
+    def _start_cloud_task(self, operation, *, automatic=False):
+        if self.cloud_task_in_progress:
+            if not automatic:
+                self.cloud_status_text.set("Aguarde a operação atual terminar.")
+            return
+        self.cloud_task_in_progress = True
+        if not automatic:
+            self.cloud_status_text.set("Conectando com segurança...")
+
+        def run():
+            try:
+                result = operation()
+                self.events.put(
+                    (
+                        "cloud_result",
+                        {
+                            "result": result,
+                            "automatic": automatic,
+                        },
+                    )
+                )
+            except RecoveryKeyRequired as error:
+                self.events.put(
+                    (
+                        "cloud_recovery_required",
+                        {
+                            "message": str(error),
+                            "automatic": automatic,
+                        },
+                    )
+                )
+            except (CloudError, OSError) as error:
+                self.events.put(
+                    (
+                        "cloud_error",
+                        {
+                            "message": str(error),
+                            "automatic": automatic,
+                        },
+                    )
+                )
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _cloud_authenticate(self, create=False):
+        email = self.cloud_email_entry.get().strip()
+        password = self.cloud_password_entry.get()
+        self.cloud_password_entry.delete(0, tk.END)
+
+        def operation():
+            auth_result = (
+                self.cloud.sign_up(email, password)
+                if create
+                else self.cloud.sign_in(email, password)
+            )
+            if auth_result.get("confirmation_required"):
+                return {
+                    "message": (
+                        "Conta criada. Confirme o e-mail e depois clique em Entrar. "
+                        "Se não chegar, use Reenviar confirmação."
+                    ),
+                    "profile_changed": False,
+                }
+            sync_result = self.cloud.sync_once()
+            return {
+                "message": "Conta conectada e dados sincronizados.",
+                "profile_changed": True,
+                "sync": sync_result,
+            }
+
+        self._start_cloud_task(operation)
+
+    def _cloud_resend_confirmation(self):
+        email = self.cloud_email_entry.get().strip()
+
+        def operation():
+            self.cloud.resend_signup_confirmation(email)
+            return {
+                "message": (
+                    "E-mail de confirmação reenviado. Verifique também spam e promoções."
+                ),
+                "profile_changed": False,
+            }
+
+        self._start_cloud_task(operation)
+
+    def _cloud_sync_now(self):
+        recovery_code = self.cloud_recovery_entry.get().strip() or None
+
+        def operation():
+            sync_result = self.cloud.sync_once(recovery_code=recovery_code)
+            return {
+                "message": "Sincronização concluída.",
+                "profile_changed": bool(sync_result.get("remote_changed")),
+                "sync": sync_result,
+            }
+
+        self._start_cloud_task(operation)
+
+    def _cloud_unlock(self):
+        if not self.cloud_recovery_entry.get().strip():
+            self.cloud_status_text.set("Digite a chave de recuperação.")
+            return
+        self._cloud_sync_now()
+
+    def _cloud_account_selected(self, label):
+        user_id = self.cloud_account_ids_by_label.get(label)
+        active = self.cloud_state.active_session()
+        if not user_id or (active and active.get("user_id") == user_id):
+            return
+
+        def operation():
+            self.cloud.switch_account(user_id)
+            sync_result = self.cloud.sync_once()
+            return {
+                "message": "Conta trocada e dados sincronizados.",
+                "profile_changed": True,
+                "sync": sync_result,
+            }
+
+        self._start_cloud_task(operation)
+
+    def _cloud_sign_out(self):
+        def operation():
+            self.cloud.sign_out(forget=False)
+            return {
+                "message": "Modo sem conta ativado. O perfil conectado foi preservado.",
+                "profile_changed": True,
+            }
+
+        self._start_cloud_task(operation)
+
+    def _cloud_auto_sync(self):
+        if self.closing:
+            return
+        cloud_status = self.cloud.status()
+        if (
+            cloud_status["configured"]
+            and cloud_status["signed_in"]
+            and cloud_status["has_local_key"]
+            and not self.cloud_task_in_progress
+        ):
+            self._start_cloud_task(
+                lambda: {
+                    "message": "Sincronização automática concluída.",
+                    "profile_changed": self.cloud.sync_once().get(
+                        "remote_changed",
+                        False,
+                    ),
+                },
+                automatic=True,
+            )
+        self.root.after(30_000, self._cloud_auto_sync)
+
+    def _cloud_load_devices(self):
+        self._start_cloud_task(
+            lambda: {
+                "message": "Lista de dispositivos atualizada.",
+                "devices": self.cloud.list_devices(),
+            }
+        )
+
+    def _cloud_revoke_device(self, device_id):
+        def operation():
+            self.cloud.revoke_device(device_id)
+            return {
+                "message": "Dispositivo removido da conta.",
+                "devices": self.cloud.list_devices(),
+            }
+
+        self._start_cloud_task(operation)
+
+    def _refresh_after_cloud_profile_change(self):
+        self.auto_paste.set(bool(self.config.get("auto_paste", True)))
+        self.grammar_correction.set(bool(self.config.get("grammar_correction", True)))
+        self.capture_clipboard_history.set(
+            bool(self.config.get("capture_clipboard_history", False))
+        )
+        self.mute_playback_while_recording.set(
+            bool(self.config.get("mute_playback_while_recording", True))
+        )
+        language_id = self.config.get("transcription_language", "auto")
+        language = TRANSCRIPTION_LANGUAGES.get(
+            language_id,
+            TRANSCRIPTION_LANGUAGES["auto"],
+        )
+        self.transcription_language.set(language["display_name"])
+        self.history.limit = int(self.config.get("history_limit", 150))
+        self._rebuild_corrections()
+        self._rebuild_rules()
+        self._rebuild_skills()
+        self.history_dirty = True
+        if self.tabs.get() == "Histórico":
+            self._rebuild_history()
+
+    def _finish_cloud_result(self, payload):
+        self.cloud_task_in_progress = False
+        result = payload.get("result") or {}
+        if result.get("profile_changed"):
+            self._refresh_after_cloud_profile_change()
+        sync_result = result.get("sync") or {}
+        recovery_code = sync_result.get("recovery_code")
+        if recovery_code:
+            self._show_recovery_code(recovery_code)
+        if "devices" in result:
+            self.cloud_devices = result["devices"]
+            self._rebuild_cloud_devices()
+        self._refresh_cloud_view()
+        if not payload.get("automatic"):
+            message = result.get("message", "Operação de nuvem concluída.")
+            self.cloud_status_text.set(message)
+            self.status.set(message)
+
+    def _finish_cloud_error(self, payload, recovery_required=False):
+        self.cloud_task_in_progress = False
+        self._refresh_after_cloud_profile_change()
+        self._refresh_cloud_view()
+        message = payload.get("message", "A sincronização não pôde ser concluída.")
+        if recovery_required or not payload.get("automatic"):
+            self.cloud_status_text.set(message)
+        if not payload.get("automatic"):
+            self.status.set(message)
+
+    def _show_recovery_code(self, recovery_code):
+        window = ctk.CTkToplevel(self.root)
+        window.title("Chave de recuperação")
+        window.geometry("570x285")
+        window.resizable(False, False)
+        window.transient(self.root)
+        window.grab_set()
+        window.configure(fg_color=APP_COLORS["background"])
+        ctk.CTkLabel(
+            window,
+            text="Salve esta chave agora",
+            text_color=APP_COLORS["text_strong"],
+            font=app_font(size=19, weight="bold"),
+        ).pack(anchor="w", padx=24, pady=(24, 6))
+        ctk.CTkLabel(
+            window,
+            text=(
+                "Ela abre seus dados em outro PC. O Ditado Local e o Supabase não "
+                "conseguem recuperá-la. Guarde-a em um gerenciador de senhas."
+            ),
+            text_color=APP_COLORS["text_muted"],
+            wraplength=510,
+            justify="left",
+            font=app_font(size=11),
+        ).pack(anchor="w", padx=24)
+        code_entry = ctk.CTkEntry(
+            window,
+            height=42,
+            fg_color=APP_COLORS["surface_muted"],
+            border_color="#FBBF24",
+            justify="center",
+            font=app_font(size=13, weight="bold"),
+        )
+        code_entry.pack(fill="x", padx=24, pady=18)
+        code_entry.insert(0, recovery_code)
+        code_entry.configure(state="readonly")
+        actions = ctk.CTkFrame(window, fg_color="transparent")
+        actions.pack(fill="x", padx=24)
+
+        def copy_code():
+            self._copy_to_clipboard(recovery_code)
+            self.cloud_status_text.set("Chave de recuperação copiada.")
+
+        ctk.CTkButton(
+            actions,
+            text="Copiar chave",
+            width=120,
+            fg_color="#A16207",
+            hover_color="#B7790A",
+            command=copy_code,
+        ).pack(side="left")
+        ctk.CTkButton(
+            actions,
+            text="Já salvei",
+            width=110,
+            fg_color=APP_COLORS["primary"],
+            hover_color=APP_COLORS["primary_hover"],
+            command=window.destroy,
+        ).pack(side="right")
+
+    def _rebuild_cloud_devices(self):
+        for child in self.cloud_devices_frame.winfo_children():
+            child.destroy()
+        if not self.cloud_devices:
+            ctk.CTkLabel(
+                self.cloud_devices_frame,
+                text="Clique em Atualizar depois de entrar na conta.",
+                text_color=APP_COLORS["text_subtle"],
+                font=app_font(size=10),
+            ).pack(anchor="w", pady=8)
+            return
+        current_device_id = self.cloud_state.data.get("device_id")
+        for device in self.cloud_devices:
+            row = ctk.CTkFrame(
+                self.cloud_devices_frame,
+                fg_color=APP_COLORS["surface"],
+                corner_radius=12,
+                border_width=1,
+                border_color=APP_COLORS["border"],
+            )
+            row.pack(fill="x", pady=4)
+            label = device.get("name", "Dispositivo")
+            if device.get("device_id") == current_device_id:
+                label += " · este PC"
+            if device.get("revoked_at"):
+                label += " · removido"
+            ctk.CTkLabel(
+                row,
+                text=label,
+                text_color=APP_COLORS["text"],
+                font=app_font(size=10, weight="bold"),
+            ).pack(side="left", padx=12, pady=9)
+            if (
+                device.get("device_id") != current_device_id
+                and not device.get("revoked_at")
+            ):
+                ctk.CTkButton(
+                    row,
+                    text="Remover",
+                    width=76,
+                    height=28,
+                    corner_radius=8,
+                    fg_color="#312026",
+                    hover_color="#482B35",
+                    text_color="#FFB3C0",
+                    command=lambda device_id=device.get("device_id"): self._cloud_revoke_device(
+                        device_id
+                    ),
+                ).pack(side="right", padx=9, pady=6)
+
     def _is_left_agent_chord_physically_down(self):
         return all(
             ctypes.windll.user32.GetAsyncKeyState(virtual_key) & 0x8000
             for virtual_key in self.LEFT_AGENT_VIRTUAL_KEYS
         )
+
+    def _next_hotkey_session(self):
+        self.hotkey_session_counter = (
+            getattr(self, "hotkey_session_counter", 0) + 1
+        )
+        return self.hotkey_session_counter
 
     def _on_key_press(self, key, injected=False):
         if injected:
@@ -1782,9 +2491,13 @@ class DitadoLocalApp:
 
         if key == pynput_keyboard.Key.space and ctrl_down:
             if not self.dictation_chord_active:
+                session_id = self._next_hotkey_session()
                 self.agent_chord_active = False
+                self.agent_hotkey_session = None
                 self.dictation_chord_active = True
-                self.events.put(("start", "dictation"))
+                self.dictation_hotkey_session = session_id
+                self.latest_dictation_hotkey_session = session_id
+                self.events.put(("start", ("dictation", session_id)))
         elif (
             key in self.LEFT_AGENT_KEYS
             and left_agent_down
@@ -1792,18 +2505,26 @@ class DitadoLocalApp:
             and not self.agent_chord_active
             and not self.dictation_chord_active
         ):
+            session_id = self._next_hotkey_session()
             self.agent_chord_active = True
-            self.events.put(("start", "agent"))
+            self.agent_hotkey_session = session_id
+            self.events.put(("start", ("agent", session_id)))
 
     def _on_key_release(self, key, injected=False):
         if injected:
             return
         if self.dictation_chord_active and key == pynput_keyboard.Key.space:
+            session_id = self.dictation_hotkey_session
             self.dictation_chord_active = False
-            self.events.put(("stop", None))
+            self.dictation_hotkey_session = None
+            if session_id is not None:
+                self.events.put(("stop", ("dictation", session_id)))
         if self.agent_chord_active and key in self.LEFT_AGENT_KEYS:
+            session_id = self.agent_hotkey_session
             self.agent_chord_active = False
-            self.events.put(("stop", None))
+            self.agent_hotkey_session = None
+            if session_id is not None:
+                self.events.put(("stop", ("agent", session_id)))
         self.keys_down.discard(key)
 
     def start_recording(self, mode):
@@ -1818,14 +2539,14 @@ class DitadoLocalApp:
             self.recording_mode = mode
             self.audio_chunks = []
             self.current_level = 0.0
+            if bool(self.mute_playback_while_recording.get()):
+                self.playback_mute.mute_for_recording()
             device, self.stream = self._open_input_stream_with_recovery()
             self.input_sample_rate = device["sample_rate"]
             self.agent_selected_text = ""
             self.selection_ready = threading.Event()
             self.agent_selection_cancelled = threading.Event()
             self.recording = True
-            if bool(self.mute_playback_while_recording.get()):
-                self.playback_mute.mute_for_recording()
 
             if mode == "agent":
                 self.status.set("Modo agente: ouvindo sua instrução...")
@@ -1856,8 +2577,15 @@ class DitadoLocalApp:
             self._restore_target_window()
         except Exception as error:
             self.recording = False
-            self.playback_mute.restore()
+            stream = self.stream
             self.stream = None
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
+            self.playback_mute.restore()
             self._show_error(f"Não foi possível acessar o microfone: {error}")
 
     def _switch_agent_recording_to_dictation(self):
@@ -1923,8 +2651,8 @@ class DitadoLocalApp:
     def stop_recording(self):
         if not self.recording:
             return
+        self.active_hotkey_session = None
         self.recording = False
-        self.playback_mute.restore()
         self.processing = True
         stream = self.stream
         self.stream = None
@@ -1936,6 +2664,12 @@ class DitadoLocalApp:
             self.processing = False
             self._show_error(f"Não foi possível concluir a gravação: {error}")
             return
+        finally:
+            self.playback_mute.restore()
+            try:
+                self.root.after(500, self.playback_mute.reassert_defaults)
+            except Exception:
+                pass
 
         if len(audio) < self.input_sample_rate // 4:
             self.processing = False
@@ -2546,12 +3280,34 @@ class DitadoLocalApp:
             except queue.Empty:
                 break
             if event == "start":
-                if payload == "agent" and not self.agent_chord_active:
+                mode, session_id = payload
+                latest_dictation_session = getattr(
+                    self,
+                    "latest_dictation_hotkey_session",
+                    0,
+                )
+                if (
+                    mode == "agent"
+                    and latest_dictation_session > session_id
+                ):
                     continue
-                if payload == "dictation" and not self.dictation_chord_active:
-                    continue
-                self.start_recording(payload)
+                self.start_recording(mode)
+                if self.recording and self.recording_mode == mode:
+                    self.active_hotkey_session = (mode, session_id)
             elif event == "stop":
+                mode, session_id = payload
+                latest_dictation_session = getattr(
+                    self,
+                    "latest_dictation_hotkey_session",
+                    0,
+                )
+                if (
+                    mode == "agent"
+                    and latest_dictation_session > session_id
+                ):
+                    continue
+                if getattr(self, "active_hotkey_session", None) != payload:
+                    continue
                 self.stop_recording()
             elif event == "status":
                 self.status.set(payload)
@@ -2574,6 +3330,12 @@ class DitadoLocalApp:
                 self._finish_agent_chat_reply(payload)
             elif event == "agent_chat_error":
                 self._show_agent_chat_error(payload)
+            elif event == "cloud_result":
+                self._finish_cloud_result(payload)
+            elif event == "cloud_recovery_required":
+                self._finish_cloud_error(payload, recovery_required=True)
+            elif event == "cloud_error":
+                self._finish_cloud_error(payload)
             elif event == "error":
                 self._show_error(payload)
             elif event == "show_window":
@@ -2635,13 +3397,13 @@ class DitadoLocalApp:
 
     def _exit_app(self):
         self.closing = True
-        self.playback_mute.restore()
         if self.stream is not None:
             try:
                 self.stream.stop()
                 self.stream.close()
             except Exception:
                 pass
+        self.playback_mute.restore()
         try:
             self.listener.stop()
         except Exception:

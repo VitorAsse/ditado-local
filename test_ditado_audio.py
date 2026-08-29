@@ -63,6 +63,45 @@ class PlaybackMuteControllerTests(unittest.TestCase):
         self.assertFalse(controller.restore())
         self.assertFalse(controller.active)
 
+    def test_restores_the_output_roles_captured_before_recording(self):
+        endpoint = FakeEndpointVolume(muted=False)
+        restored = []
+        original_devices = {
+            "eConsole": "device-a",
+            "eMultimedia": "device-a",
+            "eCommunications": "device-b",
+        }
+        controller = PlaybackMuteController(
+            lambda: endpoint,
+            lambda: dict(original_devices),
+            lambda devices: restored.append(dict(devices)),
+        )
+
+        self.assertTrue(controller.mute_for_recording())
+        self.assertTrue(controller.restore())
+        self.assertEqual([original_devices], restored)
+
+        self.assertTrue(controller.reassert_defaults())
+        self.assertEqual([original_devices, original_devices], restored)
+        self.assertTrue(controller.reassert_defaults())
+        self.assertEqual([original_devices, original_devices], restored)
+
+    def test_new_recording_cancels_a_pending_default_reassertion(self):
+        endpoint = FakeEndpointVolume(muted=False)
+        restored = []
+        controller = PlaybackMuteController(
+            lambda: endpoint,
+            lambda: {"eMultimedia": "device-a"},
+            lambda devices: restored.append(dict(devices)),
+        )
+
+        controller.mute_for_recording()
+        controller.restore()
+        controller.mute_for_recording()
+
+        self.assertTrue(controller.reassert_defaults())
+        self.assertEqual([{"eMultimedia": "device-a"}], restored)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -78,6 +78,68 @@ def _grammar_tokens(text):
     return re.findall(r"\w+", _normalize_for_match(text))
 
 
+INTERROGATIVE_PREFIXES = (
+    "quem",
+    "qual",
+    "quais",
+    "quando",
+    "onde",
+    "como",
+    "quanto",
+    "quantos",
+    "quanta",
+    "quantas",
+    "o que",
+    "por que",
+    "who",
+    "what",
+    "when",
+    "where",
+    "why",
+    "how",
+    "which",
+    "whose",
+    "quien",
+    "que",
+    "cuando",
+    "donde",
+    "cual",
+    "cuales",
+    "cuanto",
+    "qui",
+    "quand",
+    "ou",
+    "comment",
+    "quel",
+    "quelle",
+    "quels",
+    "quelles",
+    "wer",
+    "was",
+    "wann",
+    "wo",
+    "warum",
+    "wie",
+    "welcher",
+    "welche",
+    "welches",
+    "chi",
+    "cosa",
+    "dove",
+    "perche",
+    "come",
+    "quale",
+)
+
+
+def _starts_with_interrogative(text):
+    normalized = " ".join(_grammar_tokens(text)[:3])
+    return any(
+        normalized == prefix or normalized.startswith(prefix + " ")
+        for prefix in INTERROGATIVE_PREFIXES
+    )
+
+
 def _is_safe_grammar_revision(original, candidate):
     original = (original or "").strip()
     candidate = (candidate or "").strip()
@@ -89,8 +151,8 @@ def _is_safe_grammar_revision(original, candidate):
     if not original_tokens or not candidate_tokens:
         return False
 
-    length_ratio = len(candidate_tokens) / len(original_tokens)
-    if not 0.6 <= length_ratio <= 1.4:
+    maximum_token_delta = max(1, round(len(original_tokens) * 0.2))
+    if abs(len(candidate_tokens) - len(original_tokens)) > maximum_token_delta:
         return False
 
     similarity = SequenceMatcher(
@@ -98,7 +160,23 @@ def _is_safe_grammar_revision(original, candidate):
         original_tokens,
         candidate_tokens,
     ).ratio()
-    if similarity < 0.6:
+    minimum_similarity = 2 / 3 if len(original_tokens) <= 4 else 0.72
+    if similarity < minimum_similarity:
+        return False
+
+    original_question_marks = tuple(
+        character for character in original if character in "?!"
+    )
+    candidate_question_marks = tuple(
+        character for character in candidate if character in "?!"
+    )
+    if original_question_marks != candidate_question_marks:
+        return False
+
+    if (
+        _starts_with_interrogative(original)
+        and not _starts_with_interrogative(candidate)
+    ):
         return False
 
     original_numbers = re.findall(r"\d+(?:[.,]\d+)?", original)
@@ -120,14 +198,11 @@ def _extract_grammar_candidate(response):
     try:
         payload = json.loads(response)
     except (json.JSONDecodeError, TypeError):
-        return response
-    if not isinstance(payload, dict):
         return ""
-    for key in ("corrected_text", "transcription"):
-        candidate = payload.get(key)
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
-    return ""
+    if not isinstance(payload, dict) or set(payload) != {"corrected_text"}:
+        return ""
+    candidate = payload.get("corrected_text")
+    return candidate.strip() if isinstance(candidate, str) else ""
 
 
 def select_voice_skill(instruction, skills):

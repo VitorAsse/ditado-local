@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [switch]$StartWithWindows,
+    [switch]$StartWithWindows = $true,
     [switch]$SkipLaunch
 )
 
@@ -78,8 +78,11 @@ if ($LASTEXITCODE -ne 0) {
 $applicationFiles = @(
     "ditado_ai.py",
     "ditado_audio.py",
+    "ditado_chat.py",
+    "ditado_cloud.py",
     "ditado_local.pyw",
     "ditado_storage.py",
+    "ditado_theme.py",
     "launch_ditado.vbs",
     "launch_ditado_background.vbs",
     "LICENSE",
@@ -91,6 +94,30 @@ foreach ($fileName in $applicationFiles) {
         throw "Arquivo obrigatorio ausente: $fileName"
     }
     Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $installRoot $fileName) -Force
+}
+
+$assetsSource = Join-Path $sourceRoot "assets"
+$assetsDestination = Join-Path $installRoot "assets"
+$fontsDestination = Join-Path $assetsDestination "fonts"
+foreach ($assetFile in @(
+    "ditado-local.png",
+    "fonts\DMSans.ttf",
+    "fonts\OFL.txt"
+)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $assetsSource $assetFile))) {
+        throw "Arquivo obrigatorio ausente: assets\$assetFile"
+    }
+}
+New-Item -ItemType Directory -Path $fontsDestination -Force | Out-Null
+Copy-Item `
+    -LiteralPath (Join-Path $assetsSource "ditado-local.png") `
+    -Destination (Join-Path $assetsDestination "ditado-local.png") `
+    -Force
+foreach ($fontFileName in @("DMSans.ttf", "OFL.txt")) {
+    Copy-Item `
+        -LiteralPath (Join-Path $assetsSource "fonts\$fontFileName") `
+        -Destination (Join-Path $fontsDestination $fontFileName) `
+        -Force
 }
 
 $wscript = Join-Path $env:WINDIR "System32\wscript.exe"
@@ -106,17 +133,21 @@ $startMenuShortcut.WorkingDirectory = $installRoot
 $startMenuShortcut.Description = "Ditado e acoes por voz executados localmente"
 $startMenuShortcut.Save()
 
+$startupDirectory = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
+$startupShortcutPath = Join-Path $startupDirectory "Ditado Local.lnk"
 if ($StartWithWindows) {
-    $startupDirectory = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
     New-Item -ItemType Directory -Path $startupDirectory -Force | Out-Null
     $startupShortcut = $shortcutShell.CreateShortcut(
-        (Join-Path $startupDirectory "Ditado Local.lnk")
+        $startupShortcutPath
     )
     $startupShortcut.TargetPath = $wscript
     $startupShortcut.Arguments = "`"$(Join-Path $installRoot 'launch_ditado_background.vbs')`""
     $startupShortcut.WorkingDirectory = $installRoot
     $startupShortcut.Description = "Inicia o Ditado Local com o Windows"
     $startupShortcut.Save()
+}
+elseif (Test-Path -LiteralPath $startupShortcutPath -PathType Leaf) {
+    Remove-Item -LiteralPath $startupShortcutPath -Force
 }
 
 Write-Host ""
