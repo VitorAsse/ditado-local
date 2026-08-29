@@ -3,7 +3,7 @@ cryptography==50.0.1
 ctranslate2==4.4.0
 faster-whisper==1.2.1
 httpx==0.28.1
-numpy==2.4.6
+numpy==2.5.2
 Pillow==12.3.0
 pycaw==20251023
 pynput==1.8.2
