@@ -10,5 +10,5 @@ pynput==1.8.2
 pyperclip==1.11.0
 pystray==0.19.5
 setuptools==80.9.0
-sounddevice==0.5.5
+sounddevice==0.5.6
 soxr==1.1.0
