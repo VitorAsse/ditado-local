@@ -1707,14 +1707,46 @@ class DitadoLocalApp:
             self.wrong_entry.delete(0, tk.END)
             self.correct_entry.delete(0, tk.END)
             self._rebuild_corrections()
-            self.status.set("Correção adicionada ao dicionário.")
+            self._sync_corrections_after_change(
+                "Correção adicionada ao dicionário."
+            )
         else:
             self.status.set("Preencha a forma errada e a forma correta.")
 
     def _remove_correction(self, wrong):
         self.config.remove_correction(wrong)
         self._rebuild_corrections()
-        self.status.set("Correção removida do dicionário.")
+        self._sync_corrections_after_change(
+            "Correção removida do dicionário."
+        )
+
+    def _sync_corrections_after_change(self, local_message):
+        cloud_status = self.cloud.status()
+        if not (
+            cloud_status.get("configured")
+            and cloud_status.get("signed_in")
+        ):
+            self.status.set(
+                f"{local_message} Salva neste PC; conecte a nuvem para sincronizar."
+            )
+            return False
+        if self.cloud_task_in_progress:
+            self.status.set(
+                f"{local_message} Será enviada na próxima sincronização."
+            )
+            return False
+
+        def operation():
+            sync_result = self.cloud.sync_once()
+            return {
+                "message": "Correções salvas na nuvem.",
+                "profile_changed": bool(sync_result.get("remote_changed")),
+                "sync": sync_result,
+            }
+
+        self.status.set(f"{local_message} Enviando para a nuvem...")
+        self._start_cloud_task(operation)
+        return True
 
     def _rebuild_corrections(self):
         for child in self.corrections_frame.winfo_children():

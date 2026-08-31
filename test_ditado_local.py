@@ -1309,6 +1309,65 @@ class AgentConversationTests(unittest.TestCase):
         app.status.set.assert_called_once_with("Item do histórico copiado.")
 
 
+class CloudCorrectionSyncTests(unittest.TestCase):
+    @staticmethod
+    def _app(cloud_status):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.cloud = Mock()
+        app.cloud.status.return_value = cloud_status
+        app.cloud_task_in_progress = False
+        app.status = Mock()
+        app._start_cloud_task = Mock()
+        return app
+
+    def test_correction_change_syncs_immediately_when_account_is_connected(self):
+        app = self._app({"configured": True, "signed_in": True})
+        app.cloud.sync_once.return_value = {
+            "pushed": 1,
+            "remote_changed": False,
+        }
+
+        started = app._sync_corrections_after_change(
+            "Correção adicionada ao dicionário."
+        )
+
+        self.assertTrue(started)
+        app._start_cloud_task.assert_called_once()
+        operation = app._start_cloud_task.call_args.args[0]
+        result = operation()
+        app.cloud.sync_once.assert_called_once_with()
+        self.assertEqual("Correções salvas na nuvem.", result["message"])
+        self.assertEqual(1, result["sync"]["pushed"])
+
+    def test_correction_change_stays_local_until_cloud_is_connected(self):
+        app = self._app({"configured": False, "signed_in": False})
+
+        started = app._sync_corrections_after_change(
+            "Correção adicionada ao dicionário."
+        )
+
+        self.assertFalse(started)
+        app._start_cloud_task.assert_not_called()
+        message = app.status.set.call_args.args[0]
+        self.assertIn("Salva neste PC", message)
+        self.assertIn("conecte a nuvem", message)
+
+    def test_correction_change_waits_for_an_active_cloud_task(self):
+        app = self._app({"configured": True, "signed_in": True})
+        app.cloud_task_in_progress = True
+
+        started = app._sync_corrections_after_change(
+            "Correção removida do dicionário."
+        )
+
+        self.assertFalse(started)
+        app._start_cloud_task.assert_not_called()
+        self.assertIn(
+            "próxima sincronização",
+            app.status.set.call_args.args[0],
+        )
+
+
 class InstallerStartupTests(unittest.TestCase):
     def test_windows_startup_is_enabled_by_default_and_can_be_disabled(self):
         installer = APP_PATH.with_name("install.ps1").read_text(encoding="utf-8")
