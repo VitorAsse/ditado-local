@@ -2,6 +2,13 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.3.1 - 2026-08-31
+
+- Correções ortográficas adicionadas ou removidas passam a iniciar uma sincronização
+  imediata quando a conta Supabase está conectada.
+- A interface informa quando a alteração foi enviada à nuvem, ficou salva somente no
+  computador ou aguardará a próxima sincronização.
+
 ## 0.3.0 - 2026-08-29
 
 - `Ctrl + Espaço` passa a ter uma sessão própria e sempre prevalece sobre eventos
