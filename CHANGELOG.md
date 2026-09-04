@@ -2,6 +2,16 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.3.2 - 2026-09-04
+
+- O modo Agente agora diferencia Ollama ausente, serviço fechado e modelo ainda não
+  baixado, com mensagens claras e ações específicas para cada situação.
+- A aba Agente e o aviso flutuante permitem instalar o Ollama pelo WinGet, iniciar o
+  serviço local e baixar o modelo padrão sem sair do Ditado Local.
+- O modo Agente voltou a funcionar com o modelo local padrão, inclusive nas
+  continuações pelo mini chat, sem impedir o ditado comum quando o Ollama está ausente.
+- O aplicativo, a bandeja do sistema e os atalhos do Windows agora usam um novo ícone.
+
 ## 0.3.1 - 2026-08-31
 
 - Correções ortográficas adicionadas ou removidas passam a iniciar uma sincronização
