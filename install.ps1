@@ -81,6 +81,7 @@ $applicationFiles = @(
     "ditado_chat.py",
     "ditado_cloud.py",
     "ditado_local.pyw",
+    "ditado_ollama.py",
     "ditado_storage.py",
     "ditado_theme.py",
     "launch_ditado.vbs",
@@ -101,6 +102,8 @@ $assetsDestination = Join-Path $installRoot "assets"
 $fontsDestination = Join-Path $assetsDestination "fonts"
 foreach ($assetFile in @(
     "ditado-local.png",
+    "ditado-local-icon.png",
+    "ditado-local.ico",
     "fonts\DMSans.ttf",
     "fonts\OFL.txt"
 )) {
@@ -113,6 +116,12 @@ Copy-Item `
     -LiteralPath (Join-Path $assetsSource "ditado-local.png") `
     -Destination (Join-Path $assetsDestination "ditado-local.png") `
     -Force
+foreach ($iconFileName in @("ditado-local-icon.png", "ditado-local.ico")) {
+    Copy-Item `
+        -LiteralPath (Join-Path $assetsSource $iconFileName) `
+        -Destination (Join-Path $assetsDestination $iconFileName) `
+        -Force
+}
 foreach ($fontFileName in @("DMSans.ttf", "OFL.txt")) {
     Copy-Item `
         -LiteralPath (Join-Path $assetsSource "fonts\$fontFileName") `
@@ -131,6 +140,7 @@ $startMenuShortcut.TargetPath = $wscript
 $startMenuShortcut.Arguments = "`"$(Join-Path $installRoot 'launch_ditado.vbs')`""
 $startMenuShortcut.WorkingDirectory = $installRoot
 $startMenuShortcut.Description = "Ditado e acoes por voz executados localmente"
+$startMenuShortcut.IconLocation = "$(Join-Path $assetsDestination 'ditado-local.ico'),0"
 $startMenuShortcut.Save()
 
 $startupDirectory = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
@@ -144,6 +154,7 @@ if ($StartWithWindows) {
     $startupShortcut.Arguments = "`"$(Join-Path $installRoot 'launch_ditado_background.vbs')`""
     $startupShortcut.WorkingDirectory = $installRoot
     $startupShortcut.Description = "Inicia o Ditado Local com o Windows"
+    $startupShortcut.IconLocation = "$(Join-Path $assetsDestination 'ditado-local.ico'),0"
     $startupShortcut.Save()
 }
 elseif (Test-Path -LiteralPath $startupShortcutPath -PathType Leaf) {

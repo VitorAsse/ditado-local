@@ -22,6 +22,9 @@ from pynput import keyboard as pynput_keyboard
 
 APP_ROOT = Path(os.environ["LOCALAPPDATA"]) / "faster-whisper"
 GPU_LIBS = APP_ROOT / "gpu-libs"
+ASSETS_ROOT = Path(__file__).resolve().parent / "assets"
+APP_ICON_PNG = ASSETS_ROOT / "ditado-local-icon.png"
+APP_ICON_ICO = ASSETS_ROOT / "ditado-local.ico"
 DLL_DIRECTORY_HANDLE = None
 CUDA_RUNTIME_DLLS = (
     "cublas64_12.dll",
@@ -54,6 +57,8 @@ from faster_whisper import WhisperModel
 
 from ditado_ai import (
     OllamaClient,
+    OllamaModelMissingError,
+    OllamaUnavailableError,
     apply_custom_corrections,
     correction_prompt,
     normalize_agent_conversation,
@@ -61,6 +66,13 @@ from ditado_ai import (
 )
 from ditado_audio import PlaybackMuteController
 from ditado_chat import AgentChatWindow
+from ditado_ollama import (
+    OllamaSetupError,
+    find_ollama_executable,
+    is_local_ollama_url,
+    ollama_api_is_ready,
+    prepare_ollama,
+)
 from ditado_cloud import (
     CloudAuthenticationError,
     CloudError,
@@ -445,6 +457,8 @@ class DitadoLocalApp:
         self.root.geometry("790x770")
         self.root.minsize(740, 690)
         self.root.configure(fg_color=APP_COLORS["background"])
+        self.window_icon = None
+        self._set_window_icon()
 
         self.events = queue.SimpleQueue()
         self.model_lock = threading.Lock()
@@ -520,6 +534,9 @@ class DitadoLocalApp:
         self.cloud_task_in_progress = False
         self.editing_rule_id = None
         self.editing_skill_id = None
+        self.ollama_setup_action = None
+        self.ollama_setup_message = ""
+        self.ollama_setup_in_progress = False
 
         self.input_devices = self._get_input_devices()
         self._build_interface()
@@ -539,8 +556,224 @@ class DitadoLocalApp:
         self.root.after(50, self._process_events)
         self.root.after(450, self._poll_clipboard)
         self.root.after(700, self._refresh_lazy_views)
+        self.root.after(250, self._start_ollama_probe)
         self.root.after(300, self._start_model_preload)
         self.root.after(1200, self._cloud_auto_sync)
+
+    def _set_window_icon(self):
+        try:
+            if APP_ICON_ICO.exists():
+                self.root.iconbitmap(str(APP_ICON_ICO))
+            if APP_ICON_PNG.exists():
+                self.window_icon = tk.PhotoImage(file=str(APP_ICON_PNG))
+                self.root.iconphoto(True, self.window_icon)
+        except (OSError, tk.TclError):
+            self.window_icon = None
+
+    @staticmethod
+    def _load_app_icon():
+        try:
+            with Image.open(APP_ICON_PNG) as icon:
+                return icon.convert("RGBA").resize(
+                    (256, 256),
+                    Image.Resampling.LANCZOS,
+                )
+        except (FileNotFoundError, OSError):
+            icon_image = Image.new("RGBA", (64, 64), "#111116")
+            draw = ImageDraw.Draw(icon_image)
+            draw.rounded_rectangle((6, 6, 58, 58), radius=18, fill="#7C5CFC")
+            draw.rounded_rectangle((27, 16, 37, 39), radius=5, fill="#FFFFFF")
+            draw.arc((19, 24, 45, 48), 0, 180, fill="#FFFFFF", width=4)
+            draw.line((32, 47, 32, 54), fill="#FFFFFF", width=4)
+            return icon_image
+
+    def _start_ollama_probe(self):
+        if self.closing or not is_local_ollama_url(self.ollama.url):
+            return
+
+        def probe():
+            if ollama_api_is_ready(self.ollama.url):
+                return
+            if find_ollama_executable() is None:
+                message = (
+                    "Modo Agente indisponível: o Ollama não está instalado. "
+                    "Clique em Instalar Ollama para configurar tudo automaticamente."
+                )
+                action = "install"
+            else:
+                message = (
+                    "Modo Agente indisponível: o Ollama está instalado, mas não está "
+                    "em execução. Clique em Iniciar Ollama."
+                )
+                action = "start"
+            self.events.put(
+                ("agent_setup_required", (message, action, False))
+            )
+
+        threading.Thread(target=probe, daemon=True).start()
+
+    def _ollama_setup_payload(self, error, show_overlay):
+        action = None
+        message = str(error)
+        if is_local_ollama_url(self.ollama.url):
+            if isinstance(error, OllamaModelMissingError):
+                action = "model"
+            elif isinstance(error, OllamaUnavailableError):
+                if find_ollama_executable() is None:
+                    action = "install"
+                    message = (
+                        "Modo Agente indisponível: o Ollama não está instalado. "
+                        "Clique em Instalar Ollama para instalar o aplicativo e o modelo."
+                    )
+                else:
+                    action = "start"
+                    message = (
+                        "Modo Agente indisponível: o Ollama está instalado, mas não está "
+                        "em execução. Clique em Iniciar Ollama."
+                    )
+        return message, action, show_overlay
+
+    def _set_agent_setup_action(self, action):
+        self.ollama_setup_action = action
+        labels = {
+            "install": "Instalar Ollama",
+            "start": "Iniciar Ollama",
+            "model": "Baixar modelo",
+        }
+        label = labels.get(action)
+        if not label:
+            self.agent_setup_button.pack_forget()
+            return
+        self.agent_setup_button.configure(
+            text=label,
+            state="disabled" if self.ollama_setup_in_progress else "normal",
+        )
+        if not self.agent_setup_button.winfo_manager():
+            self.agent_setup_button.pack(
+                anchor="w",
+                padx=16,
+                pady=(0, 13),
+            )
+
+    def _handle_agent_setup_required(self, payload):
+        message, action, show_overlay = payload
+        self.ollama_setup_message = message
+        self.agent_backend = message
+        self.agent_status_text.set(message)
+        self._set_agent_setup_action(action)
+        if not show_overlay:
+            return
+
+        self.recording = False
+        self.processing = False
+        self.status.set(message)
+        self.status_dot.configure(text_color="#FB7185")
+        self.ready_badge.configure(text="CONFIGURAR", fg_color="#47202A")
+        overlay_copy = {
+            "install": (
+                "Ollama não instalado",
+                "Instale para ativar o modo Agente",
+                "Instalar",
+            ),
+            "start": (
+                "Ollama está fechado",
+                "Inicie o serviço local do Agente",
+                "Iniciar",
+            ),
+            "model": (
+                "Modelo não instalado",
+                "Baixe o modelo local do Agente",
+                "Baixar",
+            ),
+        }
+        title, subtitle, action_label = overlay_copy.get(
+            action,
+            ("Agente indisponível", message[:48], None),
+        )
+        self.overlay.show(
+            "error",
+            title,
+            subtitle,
+            "#FB7185",
+            action_label=action_label,
+            on_action=self._start_ollama_setup if action_label else None,
+        )
+        if not action_label:
+            self.root.after(6000, self.overlay.hide)
+
+    def _start_ollama_setup(self):
+        if self.ollama_setup_in_progress:
+            return
+        self.ollama_setup_in_progress = True
+        self._set_agent_setup_action(self.ollama_setup_action or "install")
+        self._show_main_window()
+        self.tabs.set("Agente")
+        self.overlay.show(
+            "agent_processing",
+            "Preparando o Agente...",
+            "Acompanhe o progresso na aba Agente",
+            "#E879F9",
+        )
+
+        def notify(title, detail):
+            self.events.put(("ollama_setup_progress", (title, detail)))
+
+        def run_setup():
+            try:
+                prepare_ollama(
+                    self.ollama.model,
+                    self.ollama.url,
+                    on_status=notify,
+                )
+                self.ollama.warm_up()
+                self.events.put(("ollama_setup_complete", None))
+            except (OllamaSetupError, OllamaUnavailableError, OllamaModelMissingError) as error:
+                self.events.put(("ollama_setup_failed", str(error)))
+            except Exception:
+                self.events.put(
+                    (
+                        "ollama_setup_failed",
+                        "A instalação automática encontrou um erro inesperado. "
+                        "Tente novamente ou instale o Ollama manualmente.",
+                    )
+                )
+
+        threading.Thread(target=run_setup, daemon=True).start()
+
+    def _update_ollama_setup_progress(self, payload):
+        title, detail = payload
+        self.agent_status_text.set(f"{title} {detail}")
+        self.status.set(title)
+        self.agent_setup_button.configure(text="Aguarde...", state="disabled")
+        self.overlay.show("agent_processing", title, detail[:48], "#E879F9")
+
+    def _finish_ollama_setup(self):
+        self.ollama_setup_in_progress = False
+        self.ollama_setup_message = ""
+        self.agent_backend = f"{self.ollama.model}  •  Ollama local  •  pronto"
+        self.agent_status_text.set(self.agent_backend)
+        self._set_agent_setup_action(None)
+        self.status.set("Modo Agente pronto para usar.")
+        self.status_dot.configure(text_color="#4ADE80")
+        self.ready_badge.configure(text="PRONTO", fg_color="#173727")
+        self.overlay.show(
+            "success",
+            "Agente configurado",
+            "O Ollama e o modelo estão prontos",
+            "#4ADE80",
+        )
+        self.root.after(1800, self.overlay.hide)
+
+    def _fail_ollama_setup(self, message):
+        self.ollama_setup_in_progress = False
+        if find_ollama_executable() is None:
+            action = "install"
+        elif ollama_api_is_ready(self.ollama.url):
+            action = "model"
+        else:
+            action = "start"
+        full_message = f"Não foi possível concluir a configuração. {message}"
+        self._handle_agent_setup_required((full_message, action, True))
 
     def _get_input_devices(self):
         devices = []
@@ -1062,8 +1295,22 @@ class DitadoLocalApp:
             agent_status,
             textvariable=self.agent_status_text,
             text_color=APP_COLORS["text_muted"],
+            wraplength=640,
+            justify="left",
             font=app_font(size=11),
         ).pack(anchor="w", padx=16, pady=(0, 13))
+        self.agent_setup_button = ctk.CTkButton(
+            agent_status,
+            text="Instalar Ollama",
+            width=142,
+            height=34,
+            corner_radius=10,
+            fg_color=APP_COLORS["accent"],
+            hover_color=APP_COLORS["accent_hover"],
+            text_color=APP_COLORS["text_strong"],
+            font=app_font(size=11, weight="bold"),
+            command=self._start_ollama_setup,
+        )
         ctk.CTkLabel(
             agent_status,
             textvariable=self.rules_status_text,
@@ -2597,6 +2844,17 @@ class DitadoLocalApp:
             return
         if self.processing:
             return
+        if mode == "agent" and self.ollama_setup_in_progress:
+            self.status.set("A configuração do modo Agente ainda está em andamento.")
+            return
+        if mode == "agent" and self.ollama_setup_action:
+            message = self.ollama_setup_message or (
+                "O modo Agente precisa concluir a configuração do Ollama."
+            )
+            self._handle_agent_setup_required(
+                (message, self.ollama_setup_action, True)
+            )
+            return
         try:
             self.target_window = ctypes.windll.user32.GetForegroundWindow()
             self.recording_mode = mode
@@ -2829,6 +3087,7 @@ class DitadoLocalApp:
             )
             list(segments)
             self.events.put(("status", "Whisper pronto. Preparando revisão local..."))
+            self.events.put(("model_ready", None))
         except Exception as error:
             self.events.put(("error", f"Não foi possível preparar o Whisper: {error}"))
             return
@@ -2838,14 +3097,33 @@ class DitadoLocalApp:
             try:
                 self.ollama.warm_up()
                 self.agent_backend = f"{self.ollama.model}  •  Ollama local  •  pronto"
-                self.events.put(("model_ready", None))
+                self.events.put(("agent_ready", None))
                 return
+            except (OllamaUnavailableError, OllamaModelMissingError) as error:
+                last_agent_error = error
+                break
             except Exception as error:
                 last_agent_error = error
                 time.sleep(2)
 
-        self.agent_backend = f"Agente aguardando Ollama: {last_agent_error}"
-        self.events.put(("model_ready", None))
+        if isinstance(
+            last_agent_error,
+            (OllamaUnavailableError, OllamaModelMissingError),
+        ):
+            self.events.put(
+                (
+                    "agent_setup_required",
+                    self._ollama_setup_payload(last_agent_error, False),
+                )
+            )
+        else:
+            self.agent_backend = f"Agente local indisponível: {last_agent_error}"
+            self.events.put(
+                (
+                    "agent_setup_required",
+                    (self.agent_backend, None, False),
+                )
+            )
 
     def _reload_transcription_model(self):
         try:
@@ -3011,6 +3289,13 @@ class DitadoLocalApp:
                         mode,
                         conversation,
                     ),
+                )
+            )
+        except (OllamaUnavailableError, OllamaModelMissingError) as error:
+            self.events.put(
+                (
+                    "agent_setup_required",
+                    self._ollama_setup_payload(error, True),
                 )
             )
         except Exception as error:
@@ -3265,6 +3550,19 @@ class DitadoLocalApp:
                         (entry_id, result, updated),
                     )
                 )
+            except (OllamaUnavailableError, OllamaModelMissingError) as error:
+                self.events.put(
+                    (
+                        "agent_chat_error",
+                        (entry_id, str(error)),
+                    )
+                )
+                self.events.put(
+                    (
+                        "agent_setup_required",
+                        self._ollama_setup_payload(error, True),
+                    )
+                )
             except Exception as error:
                 self.events.put(
                     (
@@ -3306,24 +3604,31 @@ class DitadoLocalApp:
 
     def _show_agent_chat_error(self, payload):
         entry_id, message = payload
+        ollama_messages = (
+            "O Ollama está funcionando, mas o modelo ",
+            "O modo Agente precisa do Ollama",
+        )
         safe_messages = (
             "Esta conversa não tem contexto válido para continuar.",
             "Digite o ajuste que o agente deve fazer.",
             "O ajuste está muito longo. Resuma o pedido antes de enviar.",
             "A conversa atingiu o limite local. Inicie uma nova transformação.",
         )
-        user_message = next(
-            (
-                safe_message
-                for safe_message in safe_messages
-                if message.startswith(safe_message)
-            ),
-            (
-                "O agente local não respondeu ao ajuste. A conversa foi preservada e "
-                "seu texto continua no campo. Verifique se o Ollama está disponível e "
-                "tente novamente."
-            ),
-        )
+        if message.startswith(ollama_messages):
+            user_message = message
+        else:
+            user_message = next(
+                (
+                    safe_message
+                    for safe_message in safe_messages
+                    if message.startswith(safe_message)
+                ),
+                (
+                    "O agente local não respondeu ao ajuste. A conversa foi preservada e "
+                    "seu texto continua no campo. Verifique se o Ollama está disponível e "
+                    "tente novamente."
+                ),
+            )
         self.status.set(user_message)
         if (
             self.agent_chat_window
@@ -3427,13 +3732,27 @@ class DitadoLocalApp:
                 self.overlay.show("processing", title, subtitle, color)
             elif event == "model_ready":
                 self.backend_text.set(self.model_backend)
+                self.status.set("Transcrição pronta. Verificando o modo Agente...")
+                self.status_dot.configure(text_color="#4ADE80")
+                self.ready_badge.configure(text="DITADO PRONTO", fg_color="#173727")
+            elif event == "agent_ready":
                 self.agent_status_text.set(self.agent_backend)
+                self.ollama_setup_message = ""
+                self._set_agent_setup_action(None)
                 self.status.set(
                     "Pronto. Ctrl + Espaço dita; Ctrl esquerdo + Alt esquerdo "
                     "fala com o agente."
                 )
                 self.status_dot.configure(text_color="#4ADE80")
                 self.ready_badge.configure(text="PRONTO", fg_color="#173727")
+            elif event == "agent_setup_required":
+                self._handle_agent_setup_required(payload)
+            elif event == "ollama_setup_progress":
+                self._update_ollama_setup_progress(payload)
+            elif event == "ollama_setup_complete":
+                self._finish_ollama_setup()
+            elif event == "ollama_setup_failed":
+                self._fail_ollama_setup(payload)
             elif event == "finish":
                 self._finish_result(payload)
             elif event == "agent_chat_reply":
@@ -3462,12 +3781,7 @@ class DitadoLocalApp:
             self.root.after(50, self._process_events)
 
     def _create_tray_icon(self):
-        icon_image = Image.new("RGBA", (64, 64), "#111116")
-        draw = ImageDraw.Draw(icon_image)
-        draw.rounded_rectangle((6, 6, 58, 58), radius=18, fill="#7C5CFC")
-        draw.rounded_rectangle((27, 16, 37, 39), radius=5, fill="#FFFFFF")
-        draw.arc((19, 24, 45, 48), 0, 180, fill="#FFFFFF", width=4)
-        draw.line((32, 47, 32, 54), fill="#FFFFFF", width=4)
+        icon_image = self._load_app_icon()
         menu = pystray.Menu(
             pystray.MenuItem(
                 "Abrir Ditado local",

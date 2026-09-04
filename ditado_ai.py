@@ -20,6 +20,15 @@ MAX_CONVERSATION_TOTAL_CHARS = 48_000
 MAX_CONVERSATION_MESSAGES = 14
 MAX_FOLLOW_UP_CHARS = 4_000
 
+
+class OllamaUnavailableError(RuntimeError):
+    pass
+
+
+class OllamaModelMissingError(RuntimeError):
+    pass
+
+
 def apply_custom_corrections(text, corrections):
     result = text
     ordered = sorted(
@@ -419,8 +428,48 @@ class OllamaClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                response_body = response.read().decode("utf-8")
+        except urllib.error.HTTPError as error:
+            detail = ""
+            try:
+                error_payload = json.loads(error.read().decode("utf-8"))
+                detail = str(error_payload.get("error", "")).strip()
+            except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
+                pass
+            if error.code == 404 and "model" in detail.lower():
+                raise OllamaModelMissingError(
+                    f"O Ollama está funcionando, mas o modelo {self.model} ainda "
+                    f"não foi baixado. Clique em Baixar modelo ou execute: "
+                    f"ollama pull {self.model}"
+                ) from error
+            message = f"O Ollama recusou a solicitação (HTTP {error.code})."
+            if detail:
+                message += f" {detail}"
+            raise RuntimeError(message) from error
+        except urllib.error.URLError as error:
+            reason = error.reason
+            if (
+                isinstance(reason, ConnectionRefusedError)
+                or getattr(reason, "winerror", None) == 10061
+            ):
+                raise OllamaUnavailableError(
+                    "O modo Agente precisa do Ollama, mas o serviço local não está "
+                    "respondendo. Instale ou inicie o Ollama e tente novamente."
+                ) from error
+            raise RuntimeError(
+                "Não foi possível conectar ao Ollama. Verifique se ele está em execução."
+            ) from error
+        except TimeoutError as error:
+            raise RuntimeError(
+                "O Ollama demorou demais para responder. Tente novamente."
+            ) from error
+
+        try:
+            payload = json.loads(response_body)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("O Ollama retornou uma resposta inválida.") from error
         content = payload.get("message", {}).get("content", "").strip()
         if not content:
             raise RuntimeError("O modelo local não retornou texto.")

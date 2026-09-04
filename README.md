@@ -31,8 +31,14 @@ Novas instalações não recebem regras, termos ou preferências pessoais do aut
 - Conexão com a internet durante a instalação e no primeiro download dos modelos.
 
 Ollama é opcional para o ditado básico e necessário para revisão gramatical, regras,
-skills e ações sobre texto selecionado. Instale o
-[Ollama](https://ollama.com/download/windows) e prepare o modelo padrão:
+skills e ações sobre texto selecionado. Se ele não estiver instalado, a aba Agente
+explica o problema e oferece o botão **Instalar Ollama**. O aplicativo usa o WinGet
+do Windows para instalar o pacote oficial, inicia o serviço local e baixa o modelo
+padrão. Se o Ollama já estiver instalado ou faltar apenas o modelo, a ação muda para
+**Iniciar Ollama** ou **Baixar modelo**.
+
+Também é possível fazer a configuração manual pelo
+[instalador oficial do Ollama](https://ollama.com/download/windows) e pelo comando:
 
 ```powershell
 ollama pull qwen3:4b-instruct

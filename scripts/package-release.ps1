@@ -55,6 +55,7 @@ $packageFiles = @(
     "ditado_chat.py",
     "ditado_cloud.py",
     "ditado_local.pyw",
+    "ditado_ollama.py",
     "ditado_storage.py",
     "ditado_theme.py",
     "install.ps1",
@@ -110,13 +111,25 @@ Copy-Item `
 
 $assetsSource = Join-Path $repositoryRoot "assets"
 $assetsDestination = Join-Path $stagingRoot "assets"
-if (-not (Test-Path -LiteralPath (Join-Path $assetsSource "ditado-local.png"))) {
-    throw "Captura publica obrigatoria ausente: assets\ditado-local.png"
+foreach ($assetFileName in @(
+    "ditado-local.png",
+    "ditado-local-icon.png",
+    "ditado-local.ico"
+)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $assetsSource $assetFileName))) {
+        throw "Asset obrigatorio ausente: assets\$assetFileName"
+    }
 }
 New-Item -ItemType Directory -Path $assetsDestination -Force | Out-Null
-Copy-Item `
-    -LiteralPath (Join-Path $assetsSource "ditado-local.png") `
-    -Destination (Join-Path $assetsDestination "ditado-local.png")
+foreach ($assetFileName in @(
+    "ditado-local.png",
+    "ditado-local-icon.png",
+    "ditado-local.ico"
+)) {
+    Copy-Item `
+        -LiteralPath (Join-Path $assetsSource $assetFileName) `
+        -Destination (Join-Path $assetsDestination $assetFileName)
+}
 
 $fontsSource = Join-Path $assetsSource "fonts"
 $fontsDestination = Join-Path $assetsDestination "fonts"

@@ -1,9 +1,11 @@
 import importlib.machinery
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -16,10 +18,13 @@ DITADO_LOCAL = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(DITADO_LOCAL)
 from ditado_ai import (
     OllamaClient,
+    OllamaModelMissingError,
+    OllamaUnavailableError,
     correction_prompt,
     normalize_agent_conversation,
     select_voice_skill,
 )
+import ditado_ollama
 import ditado_storage
 from ditado_storage import AppConfig, HistoryStore
 
@@ -31,6 +36,181 @@ def destroy_test_root(root):
         except Exception:
             pass
     root.destroy()
+
+
+class OllamaAvailabilityTests(unittest.TestCase):
+    def test_connection_refused_has_an_actionable_agent_message(self):
+        client = OllamaClient()
+        refused = urllib.error.URLError(
+            ConnectionRefusedError(10061, "connection refused")
+        )
+
+        with (
+            patch("ditado_ai.urllib.request.urlopen", side_effect=refused),
+            self.assertRaisesRegex(
+                OllamaUnavailableError,
+                "Instale ou inicie o Ollama",
+            ),
+        ):
+            client.warm_up()
+
+    def test_missing_model_explains_how_to_install_it(self):
+        client = OllamaClient(model="qwen3:4b-instruct")
+        missing_model = urllib.error.HTTPError(
+            client.url,
+            404,
+            "Not Found",
+            hdrs=None,
+            fp=io.BytesIO(
+                b'{"error":"model qwen3:4b-instruct not found"}'
+            ),
+        )
+
+        with (
+            patch("ditado_ai.urllib.request.urlopen", side_effect=missing_model),
+            self.assertRaisesRegex(
+                OllamaModelMissingError,
+                "ollama pull qwen3:4b-instruct",
+            ),
+        ):
+            client.warm_up()
+
+    def test_tray_icon_uses_the_packaged_asset(self):
+        icon = DITADO_LOCAL.DitadoLocalApp._load_app_icon()
+
+        self.assertEqual("RGBA", icon.mode)
+        self.assertEqual((256, 256), icon.size)
+
+
+class OllamaSetupTests(unittest.TestCase):
+    def test_installer_uses_the_exact_official_winget_package(self):
+        winget = Path("winget.exe")
+        ollama = Path("ollama.exe")
+
+        with (
+            patch.object(
+                ditado_ollama,
+                "find_winget_executable",
+                return_value=winget,
+            ),
+            patch.object(ditado_ollama, "_run_checked") as run_checked,
+            patch.object(
+                ditado_ollama,
+                "_wait_for_ollama_executable",
+                return_value=ollama,
+            ),
+        ):
+            result = ditado_ollama.install_ollama()
+
+        command = run_checked.call_args.args[0]
+        self.assertEqual(
+            [winget, "install", "--id", "Ollama.Ollama", "--exact"],
+            command[:5],
+        )
+        self.assertIn("--silent", command)
+        self.assertIn("--accept-package-agreements", command)
+        self.assertIn("--accept-source-agreements", command)
+        self.assertEqual(ollama, result)
+
+    def test_prepare_installs_starts_and_downloads_the_model(self):
+        ollama = Path("ollama.exe")
+        statuses = []
+
+        with (
+            patch.object(
+                ditado_ollama,
+                "find_ollama_executable",
+                return_value=None,
+            ),
+            patch.object(
+                ditado_ollama,
+                "install_ollama",
+                return_value=ollama,
+            ) as install,
+            patch.object(
+                ditado_ollama,
+                "ollama_api_is_ready",
+                return_value=False,
+            ),
+            patch.object(ditado_ollama, "ensure_ollama_running") as start,
+            patch.object(ditado_ollama, "pull_ollama_model") as pull,
+        ):
+            result = ditado_ollama.prepare_ollama(
+                "qwen3:4b-instruct",
+                "http://127.0.0.1:11434/api/chat",
+                on_status=lambda title, detail: statuses.append((title, detail)),
+            )
+
+        install.assert_called_once_with()
+        start.assert_called_once_with(
+            ollama,
+            "http://127.0.0.1:11434/api/chat",
+        )
+        pull.assert_called_once_with(ollama, "qwen3:4b-instruct")
+        self.assertEqual(ollama, result)
+        self.assertEqual("Instalando o Ollama...", statuses[0][0])
+        self.assertEqual("Validando o Agente...", statuses[-1][0])
+
+    def test_prepare_refuses_to_install_for_a_remote_endpoint(self):
+        with self.assertRaisesRegex(
+            ditado_ollama.OllamaSetupError,
+            "endpoint local",
+        ):
+            ditado_ollama.prepare_ollama(
+                "qwen3:4b-instruct",
+                "https://example.com/api/chat",
+            )
+
+    def test_agent_error_distinguishes_install_start_and_model_actions(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.ollama = Mock(url="http://127.0.0.1:11434/api/chat")
+
+        with patch.object(
+            DITADO_LOCAL,
+            "find_ollama_executable",
+            return_value=None,
+        ):
+            message, action, visible = app._ollama_setup_payload(
+                OllamaUnavailableError("connection refused"),
+                True,
+            )
+        self.assertIn("não está instalado", message)
+        self.assertEqual("install", action)
+        self.assertTrue(visible)
+
+        with patch.object(
+            DITADO_LOCAL,
+            "find_ollama_executable",
+            return_value=Path("ollama.exe"),
+        ):
+            message, action, _visible = app._ollama_setup_payload(
+                OllamaUnavailableError("connection refused"),
+                True,
+            )
+        self.assertIn("não está em execução", message)
+        self.assertEqual("start", action)
+
+        message, action, _visible = app._ollama_setup_payload(
+            OllamaModelMissingError("modelo ausente"),
+            True,
+        )
+        self.assertEqual("modelo ausente", message)
+        self.assertEqual("model", action)
+
+    def test_agent_shortcut_opens_setup_instead_of_recording(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.recording = False
+        app.processing = False
+        app.ollama_setup_in_progress = False
+        app.ollama_setup_action = "install"
+        app.ollama_setup_message = "O Ollama não está instalado."
+        app._handle_agent_setup_required = Mock()
+
+        app.start_recording("agent")
+
+        app._handle_agent_setup_required.assert_called_once_with(
+            ("O Ollama não está instalado.", "install", True)
+        )
 
 
 class TranscriptionProfileTests(unittest.TestCase):
