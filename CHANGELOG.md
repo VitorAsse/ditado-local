@@ -2,6 +2,15 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.3.3 - 2026-09-09
+
+- Corrigida a inserção do caractere `₢` ao segurar `Ctrl + Alt` no modo
+  Agente em teclados brasileiros ABNT2.
+- A gravação continua iniciando com o mesmo atalho; a cópia do texto selecionado
+  aguarda a liberação das teclas para não gerar `Ctrl + Alt + C`.
+- Capturas pendentes são canceladas ao trocar de sessão, encerrar o aplicativo
+  ou ocorrer um erro, evitando cópias atrasadas.
+
 ## 0.3.2 - 2026-09-04
 
 - O modo Agente agora diferencia Ollama ausente, serviço fechado e modelo ainda não

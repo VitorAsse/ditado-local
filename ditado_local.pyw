@@ -2864,6 +2864,7 @@ class DitadoLocalApp:
                 self.playback_mute.mute_for_recording()
             device, self.stream = self._open_input_stream_with_recovery()
             self.input_sample_rate = device["sample_rate"]
+            self.agent_selection_cancelled.set()
             self.agent_selected_text = ""
             self.selection_ready = threading.Event()
             self.agent_selection_cancelled = threading.Event()
@@ -2881,7 +2882,7 @@ class DitadoLocalApp:
                 )
                 threading.Thread(
                     target=self._capture_selected_text,
-                    args=(self.agent_selection_cancelled,),
+                    args=(self.agent_selection_cancelled, self.selection_ready),
                     daemon=True,
                 ).start()
             else:
@@ -2930,28 +2931,47 @@ class DitadoLocalApp:
         rms = float(np.sqrt(np.mean(np.square(channel)))) if channel.size else 0.0
         self.current_level = min(1.0, rms * 12.0)
 
-    def _capture_selected_text(self, cancellation):
-        previous_clipboard = self._read_clipboard_text()
-        sentinel = f"__DITADO_SELECTION_{uuid.uuid4()}__"
+    def _capture_selected_text(self, cancellation, ready):
+        previous_clipboard = None
         try:
+            # Never synthesize C while the activation modifiers are held: on
+            # ABNT2, Ctrl+Alt+C types the cruzeiro sign instead of copying.
+            # Wait for both sides of Ctrl/Alt/Shift/Win to be released and
+            # stable, without blocking recording or changing physical keys.
+            modifier_keys = (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
+            released_at = None
+            while not cancellation.is_set() and not self.closing:
+                if any(
+                    ctypes.windll.user32.GetAsyncKeyState(key) & 0x8000
+                    for key in modifier_keys
+                ):
+                    released_at = None
+                elif released_at is None:
+                    released_at = time.monotonic()
+                elif time.monotonic() - released_at >= 0.04:
+                    break
+                cancellation.wait(0.02)
+            if cancellation.is_set() or self.closing:
+                return
+            self._restore_target_window()
             if cancellation.is_set():
                 return
+            previous_clipboard = self._read_clipboard_text()
+            sentinel = f"__DITADO_SELECTION_{uuid.uuid4()}__"
             self.ignore_clipboard_until = time.monotonic() + 1.2
             pyperclip.copy(sentinel)
-            self._restore_target_window()
-            self.keyboard_controller.release(pynput_keyboard.Key.alt_l)
-            time.sleep(0.04)
-            self.keyboard_controller.press("c")
-            self.keyboard_controller.release("c")
-            time.sleep(0.16)
+            self.keyboard_controller.press(pynput_keyboard.Key.ctrl_l)
+            try:
+                self.keyboard_controller.press("c")
+                self.keyboard_controller.release("c")
+            finally:
+                self.keyboard_controller.release(pynput_keyboard.Key.ctrl_l)
+            cancellation.wait(0.16)
             copied = self._read_clipboard_text()
             if cancellation.is_set():
                 pyperclip.copy(previous_clipboard)
                 self.last_clipboard_text = previous_clipboard
                 return
-            if self.agent_chord_active:
-                self.keyboard_controller.press(pynput_keyboard.Key.alt_l)
-
             if copied and copied != sentinel:
                 self.agent_selected_text = copied
                 self.history.add(copied, "selection")
@@ -2963,11 +2983,11 @@ class DitadoLocalApp:
                 self.last_clipboard_text = previous_clipboard
         except Exception:
             self.agent_selected_text = ""
-            if previous_clipboard:
+            if previous_clipboard is not None:
                 pyperclip.copy(previous_clipboard)
                 self.last_clipboard_text = previous_clipboard
         finally:
-            self.selection_ready.set()
+            ready.set()
 
     def stop_recording(self):
         if not self.recording:
@@ -3218,7 +3238,9 @@ class DitadoLocalApp:
                 raise RuntimeError("Não detectei fala. Verifique o microfone e tente novamente.")
 
             if mode == "agent":
-                self.selection_ready.wait(timeout=2.0)
+                if not self.selection_ready.wait(timeout=2.0):
+                    self.agent_selection_cancelled.set()
+                    raise RuntimeError("Solte as teclas do atalho e tente novamente.")
                 if not self.agent_selected_text:
                     raise RuntimeError(
                         "Selecione um texto para iniciar uma conversa com o agente."
@@ -3659,6 +3681,7 @@ class DitadoLocalApp:
             self._show_error(f"O resultado foi copiado, mas não consegui colar: {error}")
 
     def _show_error(self, message):
+        self.agent_selection_cancelled.set()
         self.recording = False
         self.processing = False
         self.status.set(message)
@@ -3821,6 +3844,7 @@ class DitadoLocalApp:
 
     def _exit_app(self):
         self.closing = True
+        self.agent_selection_cancelled.set()
         if self.stream is not None:
             try:
                 self.stream.stop()

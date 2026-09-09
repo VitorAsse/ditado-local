@@ -453,6 +453,7 @@ class PlaybackMuteIntegrationTests(unittest.TestCase):
     def test_exiting_the_app_restores_playback(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
         app.closing = False
+        app.agent_selection_cancelled = DITADO_LOCAL.threading.Event()
         app.stream = None
         app.playback_mute = Mock()
         app.listener = Mock()
@@ -892,6 +893,7 @@ class AgentConversationTests(unittest.TestCase):
 
     def test_cancelled_agent_selection_capture_cannot_publish_selection(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.closing = False
         app.ignore_clipboard_until = 0.0
         app.keyboard_controller = Mock()
         app.target_window = None
@@ -910,12 +912,17 @@ class AgentConversationTests(unittest.TestCase):
         with (
             patch.object(DITADO_LOCAL.pyperclip, "copy") as copy,
             patch.object(
-                DITADO_LOCAL.time,
-                "sleep",
-                side_effect=lambda _seconds: cancellation.set(),
+                DITADO_LOCAL.ctypes.windll.user32,
+                "GetAsyncKeyState",
+                return_value=0,
+            ),
+            patch.object(
+                cancellation,
+                "wait",
+                side_effect=lambda seconds: cancellation.set() if seconds == 0.16 else None,
             ),
         ):
-            app._capture_selected_text(cancellation)
+            app._capture_selected_text(cancellation, app.selection_ready)
 
         self.assertEqual("", app.agent_selected_text)
         app.history.add.assert_not_called()
