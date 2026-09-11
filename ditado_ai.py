@@ -11,7 +11,7 @@ from ditado_harness import (
     normalize_identity, output_issues, request_context, route_skills,
     task_contract, format_paragraphs,
     MESSAGE_CONTEXT_PROMPT, message_context_questions, message_from_context,
-    source_language_hint,
+    source_language_hint, NATURAL_PUNCTUATION_RULE, normalize_prose_punctuation,
 )
 
 
@@ -482,12 +482,12 @@ class OllamaClient:
                 "transforme o formato e não adicione nem remova informações. Preserve o "
                 "idioma original, o significado, o tom, os nomes próprios e os números. "
                 "Responda apenas com JSON válido no formato exato "
-                '{"corrected_text":"texto corrigido"}.'
+                '{"corrected_text":"texto corrigido"}. ' + NATURAL_PUNCTUATION_RULE
             ),
             json.dumps({"transcription": text}, ensure_ascii=False),
         )
         candidate = _extract_grammar_candidate(response)
-        return candidate if _is_safe_grammar_revision(text, candidate) else text
+        return normalize_prose_punctuation(candidate if _is_safe_grammar_revision(text, candidate) else text)
 
     def transform_selected_text(self, selected_text, instruction, skills=None,
                                 selected_skill=None, rules=None, user_identity=None):
@@ -520,7 +520,7 @@ class OllamaClient:
             check_budget(messages)
             self.last_diagnostics["context_prepared"] = True
         result = self.chat_messages(messages) if history else self.chat(system, user)
-        result = format_paragraphs(result, context)
+        result = format_paragraphs(normalize_prose_punctuation(result, context), context)
         reference = source + "\n" + "\n".join(m["content"] for m in history or [] if m["role"] == "user")
         issues = output_issues(result, context, reference, instruction)
         self.last_diagnostics["validation_failures"] = issues
@@ -540,7 +540,7 @@ class OllamaClient:
             check_budget(repair_messages)
             self.last_diagnostics["repair_attempted"] = True
             result = self.chat_messages(repair_messages)
-            result = format_paragraphs(result, context)
+            result = format_paragraphs(normalize_prose_punctuation(result, context), context)
             remaining = output_issues(result, context, reference, instruction)
             repaired_language = source_language_hint(result)
             if candidate_language and repaired_language and candidate_language != repaired_language and "explicit_language_mismatch" not in issues:

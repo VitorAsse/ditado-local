@@ -140,6 +140,11 @@ atribuição ou fidelidade em todos os casos. Veja [o contrato do harness](docs/
 Para abrir somente o mini chat sem mostrar a janela principal, clique com o botão
 direito no ícone do Ditado Local na bandeja e escolha `Conversar com o agente`.
 
+Agente e transcrição seguem uma regra global de escrita natural: não usar
+travessões ou hífens como separadores no meio das frases. A normalização funciona
+também com a revisão gramatical desligada ou indisponível. Listas, palavras
+compostas, intervalos numéricos, links, código e JSON preservam sua pontuação.
+
 ### Regras permanentes
 
 Regras são preferências sempre ativas, aplicadas na geração. Um pedido explícito de

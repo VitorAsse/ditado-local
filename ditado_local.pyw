@@ -84,7 +84,7 @@ from ditado_cloud import (
     RecoveryKeyRequired,
 )
 from ditado_storage import AppConfig, HistoryStore
-from ditado_harness import normalize_identity
+from ditado_harness import normalize_identity, normalize_prose_punctuation
 from ditado_theme import (
     APP_COLORS,
     app_font,
@@ -3369,6 +3369,7 @@ class DitadoLocalApp:
             )
             spoken_text = " ".join(segment.text.strip() for segment in segments).strip()
             spoken_text = apply_custom_corrections(spoken_text, corrections)
+            spoken_text = normalize_prose_punctuation(spoken_text)
             if not spoken_text:
                 raise RuntimeError("Não detectei fala. Verifique o microfone e tente novamente.")
 
@@ -3418,6 +3419,8 @@ class DitadoLocalApp:
                     )
                 )
                 final_text = apply_custom_corrections(final_text, corrections)
+                final_text = normalize_prose_punctuation(
+                    final_text, (conversation or {}).get("harness", {}).get("context", {}))
                 if conversation:
                     conversation = dict(conversation)
                     conversation["messages"] = [
@@ -3440,6 +3443,7 @@ class DitadoLocalApp:
                         final_text = apply_custom_corrections(final_text, corrections)
                     except Exception:
                         final_text = spoken_text
+                final_text = normalize_prose_punctuation(final_text)
 
             elapsed = time.perf_counter() - started_at
             self.events.put(
@@ -3822,6 +3826,8 @@ class DitadoLocalApp:
                     result,
                     corrections,
                 )
+                result = normalize_prose_punctuation(
+                    result, updated.get("harness", {}).get("context", {}))
                 updated = dict(updated)
                 updated["messages"] = [
                     dict(message) for message in updated["messages"]

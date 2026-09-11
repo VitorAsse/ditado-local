@@ -1,10 +1,15 @@
-# Harness do agente, versão 2
+# Harness do agente, versão 3
 
 O código de preparação e validação está em `ditado_harness.py`; a execução local e
 continuação estão em `ditado_ai.py`. Nenhum nome de pessoa, plataforma ou exemplo de
 resposta pessoal faz parte das regras de produção.
 
 ## Contrato
+
+Regra global de estilo: a prosa não usa travessões nem hífens como pausas ou
+separadores retóricos no meio das frases. Essa regra vale para todos os perfis e
+prevalece sobre pedidos, regras e skills de estilo. O modelo deve redigir a frase
+naturalmente com vírgulas, pontos ou uma construção direta.
 
 1. Pedido atual e seus overrides temporários.
 2. Regras permanentes do usuário.
@@ -55,6 +60,11 @@ terceira pessoa. Pode haver um único reparo focado. Uma falha persistente bloqu
 colagem; não se repete uma revisão geral. O reparo não pode trocar um idioma identificado.
 Essas verificações são heurísticas; não garantem atribuição, completude nem ausência
 de invenções sem números. Formatação correta não significa conteúdo correto.
+
+Uma normalização final converte esses separadores em pontuação comum, sem mudar
+palavras. Aplica-se também ao ditado sem revisão ou quando o modelo falha, e após
+correções pessoais. Preserva marcadores de listas, palavras compostas, intervalos
+numéricos, números negativos, links, código delimitado e saídas de código ou JSON.
 
 ## Contexto e continuidade
 

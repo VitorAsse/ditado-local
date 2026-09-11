@@ -2,6 +2,15 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.1 - 2026-09-11
+
+- Regra global de escrita natural no Agente e na revisão de transcrição: evitar
+  travessões e hífens como separadores no meio das frases, usando pontuação comum.
+- Normalização final também cobre ditado sem revisão gramatical, falhas do modelo,
+  continuações do chat e correções pessoais que reintroduzam esses separadores.
+- Marcadores de listas, palavras compostas, intervalos numéricos, números negativos,
+  links, código e dados estruturados mantêm sua pontuação necessária.
+
 ## 0.4.0 - 2026-09-11
 
 - Novo chat do Agente por voz ou texto, mesmo sem seleção. O atalho padrão
