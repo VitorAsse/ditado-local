@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 from difflib import SequenceMatcher
 from ditado_harness import (
-    BASE_SYSTEM_PROMPT, HARNESS_VERSION, CONTEXT_TOKENS, OUTPUT_TOKENS,
+    BASE_SYSTEM_PROMPT, HARNESS_VERSION, CONTEXT_TOKENS, MAX_CONTEXT_TOKENS, OUTPUT_TOKENS,
     REPAIR_INSTRUCTION, active_skills, check_budget, make_system, make_user,
     normalize_identity, output_issues, request_context, route_skills,
     task_contract, format_paragraphs,
@@ -23,10 +23,10 @@ OLLAMA_MODEL = os.environ.get("DITADO_OLLAMA_MODEL", "qwen3:4b-instruct")
 AGENT_CONVERSATION_VERSION = 1
 MAX_CONVERSATION_ORIGINAL_CHARS = 32_000
 MAX_CONVERSATION_SYSTEM_CHARS = 16_000
-MAX_CONVERSATION_TURN_CHARS = 8_000
-MAX_CONVERSATION_TOTAL_CHARS = 48_000
+MAX_CONVERSATION_TURN_CHARS = 32_000
+MAX_CONVERSATION_TOTAL_CHARS = 96_000
 MAX_CONVERSATION_MESSAGES = 14
-MAX_FOLLOW_UP_CHARS = 4_000
+MAX_FOLLOW_UP_CHARS = 32_000
 
 AGENT_WRITING_GUIDELINES = BASE_SYSTEM_PROMPT
 
@@ -371,6 +371,32 @@ class OllamaClient:
     def __init__(self, model=OLLAMA_MODEL, url=OLLAMA_URL):
         self.model = model
         self.url = url
+        self._model_context_capacity = None
+
+    def _context_size(self, messages):
+        required = check_budget(messages) + OUTPUT_TOKENS
+        if required <= CONTEXT_TOKENS:
+            return CONTEXT_TOKENS
+        # Query the configured model, not a hardcoded model capability. Cache only
+        # successful lookups; unavailable metadata must never cause silent truncation.
+        if self._model_context_capacity is None:
+            request = urllib.request.Request(
+                self.url.rsplit("/", 1)[0] + "/show",
+                data=json.dumps({"model": self.model}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    info = json.loads(response.read()).get("model_info", {})
+                capacity = info.get(str(info.get("general.architecture", "")) + ".context_length")
+                if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity <= 0:
+                    raise ValueError("Missing model context capacity")
+            except (OSError, ValueError, AttributeError, TypeError) as error:
+                raise RuntimeError(
+                    "Não foi possível verificar a capacidade do modelo para este texto grande. "
+                    "Verifique o Ollama e tente novamente; nenhum trecho foi cortado.") from error
+            self._model_context_capacity = min(capacity, MAX_CONTEXT_TOKENS)
+        check_budget(messages, self._model_context_capacity)
+        return min(self._model_context_capacity, ((required + 2047) // 2048) * 2048)
 
     def chat_messages(self, messages, timeout=120):
         normalized_messages = []
@@ -389,6 +415,9 @@ class OllamaClient:
         if not normalized_messages:
             raise ValueError("A conversa precisa ter pelo menos uma mensagem.")
 
+        context_size = self._context_size(normalized_messages)
+        if context_size > CONTEXT_TOKENS:
+            timeout = max(timeout, 300)
         body = {
             "model": self.model,
             "stream": False,
@@ -396,7 +425,7 @@ class OllamaClient:
             "messages": normalized_messages,
             "options": {
                 "temperature": 0.1,
-                "num_ctx": CONTEXT_TOKENS,
+                "num_ctx": context_size,
                 "num_predict": OUTPUT_TOKENS,
             },
         }

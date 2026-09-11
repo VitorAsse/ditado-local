@@ -70,8 +70,13 @@ numéricos, números negativos, links, código delimitado e saídas de código o
 
 Antes de cada chamada, o limite conservador em bytes UTF-8 reserva espaço para resposta
 e template. Não é uma contagem exata de tokens e pode recusar textos que caberiam em
-uma tokenização específica. `num_ctx=8192`, `num_predict=1400`; resposta encerrada por
-limite não é entregue. Históricos além de 14 mensagens são recusados sem cortar turnos.
+uma tokenização específica. O contexto começa em 8192 e cresce em blocos de 2048,
+até 65536 tokens, respeitando a capacidade consultada em `/api/show` do modelo
+configurado. Textos grandes têm até 300 segundos para responder. Mantemos
+`num_predict=1400`; respostas encerradas por limite não são entregues.
+O mini agente aceita entradas de até 32000 caracteres, inclusive em continuações.
+A persistência aceita turnos desse tamanho e até 96000 caracteres por conversa.
+Históricos além de 14 mensagens são recusados sem cortar turnos.
 
 Continuações usam a seleção original, os turnos completos aceitos e as regras atuais.
 Trocas de tarefa, formato e destinatário simples são reconhecidas. Skills editadas,

@@ -2,6 +2,15 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.4 - 2026-09-11
+
+- Contexto do agente cresce conforme o tamanho do pedido, de 8192 até 65536 tokens,
+  respeitando a capacidade informada pelo modelo instalado no Ollama.
+- Mini agente aceita até 32000 caracteres por mensagem e preserva textos grandes
+  no histórico e nas continuações, sem cortes silenciosos.
+- Pedidos grandes têm mais tempo para responder. A capacidade do modelo é
+  verificada antes do envio quando o pedido exige contexto adicional.
+
 ## 0.4.3 - 2026-09-11
 
 - Corrigido o pré-preenchimento do mini agente quando aplicativos como Slack não

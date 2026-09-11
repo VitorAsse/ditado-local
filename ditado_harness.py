@@ -5,6 +5,7 @@ import unicodedata
 
 HARNESS_VERSION = 3
 CONTEXT_TOKENS = 8192
+MAX_CONTEXT_TOKENS = 65536
 OUTPUT_TOKENS = 1400
 TEMPLATE_RESERVE = 512
 OUTPUT_MODES = {"auto", "chat_message", "plain_prose", "single_line", "list", "code", "json", "preserve_structure"}
@@ -272,11 +273,11 @@ def format_paragraphs(result, context):
     return result
 
 
-def check_budget(messages):
+def check_budget(messages, capacity=MAX_CONTEXT_TOKENS):
     # Qwen's byte-level tokenizer needs no more text tokens than UTF-8 bytes. This
     # deliberately conservative upper bound avoids silently discarding source text.
     bound = sum(len(m["content"].encode("utf-8")) + 16 for m in messages) + TEMPLATE_RESERVE
-    if bound + OUTPUT_TOKENS > CONTEXT_TOKENS:
+    if bound + OUTPUT_TOKENS > capacity:
         raise ValueError("O contexto está longo demais para o agente local. Selecione um trecho menor ou inicie uma nova conversa; nenhum trecho foi cortado.")
     return bound
 

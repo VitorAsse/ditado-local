@@ -81,7 +81,7 @@ class AgentWritingTests(unittest.TestCase):
 
     def test_large_context_is_rejected_before_any_model_call(self):
         with self.assertRaisesRegex(ValueError, 'nenhum trecho foi cortado'):
-            self.client.start_selected_text_conversation('á' * 5000, 'Resuma.')
+            self.client.start_selected_text_conversation('界' * 24000, 'Resuma.')
         self.client.chat.assert_not_called()
         self.client.chat_messages.assert_not_called()
 
