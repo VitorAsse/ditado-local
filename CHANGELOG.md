@@ -2,6 +2,16 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.3 - 2026-09-11
+
+- Corrigido o pré-preenchimento do mini agente quando aplicativos como Slack não
+  disponibilizam a seleção pela acessibilidade. A captura agora usa a cópia normal
+  como alternativa, após soltar as teclas, sem aproveitar conteúdo antigo.
+- Ao salvar uma correção rápida, o formulário fecha e o app tenta substituir a
+  seleção original em um campo editável, preservando o restante do texto.
+- Seleções alteradas, campos somente leitura ou incompatíveis não são sobrescritos.
+  Nesses casos, a correção continua salva e a grafia correta fica copiada com aviso.
+
 ## 0.4.2 - 2026-09-11
 
 - Cadastro rápido de correções por Ctrl + clique direito, com formulário discreto

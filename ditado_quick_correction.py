@@ -52,8 +52,9 @@ class CorrectionGesture:
 
 
 class QuickCorrectionDialog:
-    def __init__(self, root, text, position, on_save, hint=''):
+    def __init__(self, root, text, position, on_save, hint='', on_saved=None):
         self.on_save = on_save
+        self.on_saved = on_saved
         self.saved = False
         self._focus_timer = None
         self._dismiss_timer = None
@@ -157,6 +158,11 @@ class QuickCorrectionDialog:
             self.message.configure(text=str(error))
             return 'break'
         self.saved = True
+        if self.on_saved:
+            correct = self.correct.get().strip()
+            self.close()
+            self.on_saved(correct)
+            return 'break'
         self.wrong.configure(state='disabled')
         self.correct.configure(state='disabled')
         self.message.configure(text=message)

@@ -1,6 +1,9 @@
 """Windows selection and focused-edit checks. No synthetic activation keys or focus changes."""
 import ctypes
 import threading
+import time
+import pyperclip
+from pynput import keyboard
 from contextlib import contextmanager
 from dataclasses import dataclass
 from ctypes import wintypes
@@ -27,12 +30,15 @@ class FocusTarget:
     control: int
     runtime_id: tuple = ()
     editable: bool = False
+    protected: bool = False
 
 
 class DesktopTextAccess:
     def __init__(self):
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.user32.GetForegroundWindow.restype = wintypes.HWND
+        self.user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        self.user32.SetForegroundWindow.restype = wintypes.BOOL
         self.user32.WindowFromPoint.argtypes = [wintypes.POINT]
         self.user32.WindowFromPoint.restype = wintypes.HWND
         self.user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
@@ -47,6 +53,8 @@ class DesktopTextAccess:
         self.user32.SendMessageTimeoutW.restype = wintypes.LPARAM
         self._module = None
         self._module_lock = threading.Lock()
+        self._clipboard_lock = threading.Lock()
+        self.keyboard = keyboard.Controller()
 
     def basic_focus(self):
         window = self.user32.GetForegroundWindow()
@@ -146,8 +154,10 @@ class DesktopTextAccess:
         try:
             with self.automation() as (client, module):
                 element = self._focused_element(client, target)
-                if element is None or element.CurrentIsPassword:
+                if element is None:
                     return "", target
+                if element.CurrentIsPassword:
+                    return "", FocusTarget(target.window, target.control, protected=True)
                 native = self.native_edit(target)
                 snapshot = FocusTarget(target.window, target.control, tuple(element.GetRuntimeId()),
                                        native if native is not None else self._editable(element, module))
@@ -165,7 +175,11 @@ class DesktopTextAccess:
                             if len(text) > max_chars or ranges.Length > 32:
                                 raise SelectionTooLongError("A seleção está longa demais. Use um trecho menor; nenhum texto foi cortado.")
                             if text:
-                                return text, snapshot
+                                # An ancestor can expose a read-only document selection
+                                # while an unrelated input still owns keyboard focus.
+                                same_element = tuple(node.GetRuntimeId()) == snapshot.runtime_id
+                                return text, FocusTarget(snapshot.window, snapshot.control,
+                                                         snapshot.runtime_id, snapshot.editable and same_element)
                     except SelectionTooLongError:
                         raise
                     except Exception:
@@ -181,6 +195,98 @@ class DesktopTextAccess:
             raise
         except Exception:
             return "", target
+
+    def capture_selection(self, target, cancelled, max_chars=32000):
+        """Prefer UIA; bounded fallback to the application's own Copy command."""
+        ready, stop_uia = threading.Event(), threading.Event()
+        result = []
+        def read_uia():
+            try:
+                result.append(self.selected_text(target, stop_uia, max_chars=max_chars))
+            except SelectionTooLongError as error:
+                result.append(error)
+            except Exception:
+                pass
+            finally:
+                ready.set()
+        threading.Thread(target=read_uia, daemon=True).start()
+        ready.wait(0.45)
+        stop_uia.set()
+        snapshot = target
+        if cancelled.is_set() or not self.same_window(target):
+            return "", target
+        if ready.is_set() and result:
+            if isinstance(result[0], Exception):
+                raise result[0]
+            text, snapshot = result[0]
+            if snapshot.protected or text:
+                return text, snapshot
+        with self._clipboard_lock:
+            deadline = time.monotonic() + 1.5
+            while self.modifiers_down():
+                if cancelled.wait(0.015) or not self.same_window(target):
+                    return "", snapshot
+                if time.monotonic() >= deadline:
+                    raise ValueError("Solte as teclas do atalho e tente novamente.")
+            if cancelled.is_set() or not self.same_window(target):
+                return "", snapshot
+            sequence = self.user32.GetClipboardSequenceNumber()
+            if not self.copy_native_selection(target):
+                self._shortcut("c")
+            deadline = time.monotonic() + 0.6
+            while self.user32.GetClipboardSequenceNumber() == sequence:
+                if cancelled.wait(0.015) or not self.same_window(target):
+                    return "", snapshot
+                if time.monotonic() >= deadline:
+                    return "", snapshot
+            if cancelled.is_set() or not self.same_window(target):
+                return "", snapshot
+            text = pyperclip.paste()
+            if not isinstance(text, str):
+                return "", snapshot
+            if len(text) > max_chars:
+                raise SelectionTooLongError("A seleção está longa demais. Use um trecho menor; nenhum texto foi cortado.")
+            # Copy can originate from a document selection rather than its focused
+            # web input. Only native edit controls make that fallback unambiguous.
+            return text, FocusTarget(snapshot.window, snapshot.control, snapshot.runtime_id,
+                                     self.native_edit(snapshot) is True)
+
+    def _shortcut(self, letter):
+        self.keyboard.press(keyboard.Key.ctrl)
+        try:
+            self.keyboard.press(letter)
+            self.keyboard.release(letter)
+        finally:
+            self.keyboard.release(keyboard.Key.ctrl)
+
+    def replace_selected_text(self, target, original, replacement, cancelled):
+        """Replace only the still-selected text in the original editable control."""
+        if not target or not original or cancelled.is_set():
+            return False
+        if not target.editable and self.native_edit(target) is not True:
+            return False
+        if not self.user32.SetForegroundWindow(target.window) and not self.same_window(target):
+            return False
+        # The original control retains its caret/selection while the popup is open.
+        if not self.same_window(target):
+            return False
+        current = self.describe_focus(target)
+        if not current.editable or current.protected:
+            return False
+        if target.runtime_id and current.runtime_id != target.runtime_id:
+            return False
+        text, snapshot = self.capture_selection(current, cancelled, max_chars=2048)
+        if (text != original or not snapshot.editable or cancelled.is_set()
+                or not self.same_window(current)):
+            return False
+        with self._clipboard_lock:
+            if self.modifiers_down() or not self.can_paste(current) or cancelled.is_set():
+                return False
+            pyperclip.copy(replacement)
+            if not self.same_window(current) or pyperclip.paste() != replacement:
+                return False
+            self._shortcut("v")
+            return True
 
     def copy_native_selection(self, target):
         """WM_COPY is independent of held Ctrl/Alt. Limit fallback to native text controls."""

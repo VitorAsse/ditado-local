@@ -148,7 +148,11 @@ compostas, intervalos numéricos, links, código e JSON preservam sua pontuaçã
 ### Correções sem abrir a janela principal
 
 Selecione uma palavra ou frase e use `Ctrl + clique direito`. Clique em
-`Adicionar correção`, digite a grafia correta e pressione `Enter`. `Esc` fecha
+`Adicionar correção`, digite a grafia correta e pressione `Enter`. O formulário
+fecha e o app tenta substituir a seleção original no campo editável. Se a seleção
+mudou, o texto é somente leitura ou o aplicativo não permite verificar o campo,
+a correção fica salva e a grafia correta é copiada, com um aviso.
+`Esc` fecha
 sem salvar. Você também pode usar o ×, o botão Cancelar ou clicar fora do
 formulário para desistir. O clique direito normal continua pertencendo ao aplicativo de origem.
 
@@ -157,7 +161,10 @@ ou desative o recurso. A alteração vale imediatamente e acompanha a conta na
 nuvem. O cadastro usa o mesmo dicionário e a mesma sincronização da aba Correções.
 Quando estiver offline, fica salvo no PC até a próxima sincronização.
 
-A seleção depende da acessibilidade oferecida pelo aplicativo de origem.
+A captura do mini agente e da correção rápida tenta a acessibilidade e, se
+necessário, a cópia normal do aplicativo, aguardando a liberação das teclas.
+Uma cópia sem seleção não reutiliza o conteúdo anterior da área de transferência.
+A substituição automática exige confirmar o campo editável e a seleção original.
 Se ela não estiver disponível, o formulário permite colar a forma errada
 manualmente; não reutiliza texto antigo da área de transferência.
 

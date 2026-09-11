@@ -50,6 +50,17 @@ class ResultNotification:
         self.title.configure(text="Agente: resultado pronto" if mode == "agent" else "Transcrição pronta")
         self.body.configure(text=("Está na área de transferência.\nUse Ctrl + V quando quiser."
                                   if clipboard_ready else "Disponível no Histórico do Ditado Local.\nA área de transferência foi alterada."))
+        self._show()
+
+    def show_correction(self, applied):
+        if self.timer:
+            self.root.after_cancel(self.timer)
+        self.title.configure(text="Correção salva")
+        self.body.configure(text=("O texto selecionado foi corrigido." if applied else
+                                  "Não foi possível alterar a seleção.\nGrafia correta copiada: use Ctrl + V."))
+        self._show()
+
+    def _show(self):
         self.window.update_idletasks()
         width, height = 340, max(108, self.window.winfo_reqheight())
         monitor = self.user32.MonitorFromWindow(self.user32.GetForegroundWindow(), 2)

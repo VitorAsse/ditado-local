@@ -167,6 +167,50 @@ class QuickCorrectionTests(unittest.TestCase):
         finally:
             destroy_test_root(root)
 
+    def test_successful_save_closes_before_applying_to_source(self):
+        root = ui.ctk.CTk()
+        root.withdraw()
+        try:
+            save, apply = Mock(return_value='saved'), Mock()
+            dialog = QuickCorrectionDialog(root, 'exmplo', (50, 50), save, on_saved=apply)
+            dialog.open_form()
+            dialog.correct.insert(0, 'exemplo')
+            apply.side_effect = lambda correct: self.assertFalse(dialog.is_open())
+            dialog.submit()
+            save.assert_called_once_with('exmplo', 'exemplo')
+            apply.assert_called_once_with('exemplo')
+            dialog.close()
+            apply.assert_called_once()
+        finally:
+            destroy_test_root(root)
+
+    def test_invalid_save_does_not_apply_or_close(self):
+        root = ui.ctk.CTk()
+        root.withdraw()
+        try:
+            apply = Mock()
+            dialog = QuickCorrectionDialog(root, 'exmplo', (50, 50),
+                Mock(side_effect=ValueError('invalid')), on_saved=apply)
+            dialog.open_form()
+            dialog.submit()
+            self.assertTrue(dialog.is_open())
+            apply.assert_not_called()
+            dialog.close()
+        finally:
+            destroy_test_root(root)
+
+    def test_late_replacement_after_profile_switch_does_not_touch_clipboard(self):
+        app = object.__new__(ui.DitadoLocalApp)
+        request = (threading.Event(), 'old-profile')
+        app.quick_replacement = request
+        app.history = SimpleNamespace(path='new-profile')
+        app.closing = False
+        app._copy_to_clipboard = Mock()
+        app.result_notification = Mock()
+        app._finish_quick_correction_applied((request, False, 'correction'))
+        app._copy_to_clipboard.assert_not_called()
+        app.result_notification.show_correction.assert_not_called()
+
     def test_dialog_submit_saves_once_and_close_does_not_save(self):
         root = ui.ctk.CTk()
         root.withdraw()

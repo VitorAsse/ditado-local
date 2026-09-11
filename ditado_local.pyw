@@ -559,6 +559,7 @@ class DitadoLocalApp:
         self.quick_correction_request = None
         self.quick_correction_dialog = None
         self.quick_correction_active = False
+        self.quick_replacement = None
         self.correction_gesture = CorrectionGesture(
             lambda: self.config.get("quick_correction_gesture", DEFAULT_CORRECTION_GESTURE),
             self._on_quick_correction_gesture)
@@ -2130,20 +2131,20 @@ class DitadoLocalApp:
         if self.quick_correction_request is not request:
             return
         def capture():
-            text, hint = "", ""
+            text, hint, snapshot = "", "", request[3]
             try:
-                text, _snapshot = self.desktop.selected_text(request[3], request[0], max_chars=2048)
+                text, snapshot = self.desktop.capture_selection(request[3], request[0], max_chars=2048)
                 if not text:
                     hint = "Seleção indisponível neste aplicativo. Cole a forma errada abaixo."
             except Exception:
                 hint = "Não consegui ler a seleção. Cole um trecho de até 2.048 caracteres."
-            self.events.put(("quick_correction_ready", (request, text, hint)))
+            self.events.put(("quick_correction_ready", (request, text, hint, snapshot)))
         threading.Thread(target=capture, daemon=True).start()
-        self.root.after(2500, lambda: self._finish_quick_correction(
+        self.root.after(4000, lambda: self._finish_quick_correction(
             (request, "", "A seleção demorou para responder. Cole a forma errada abaixo.")))
 
     def _finish_quick_correction(self, payload):
-        request, text, hint = payload
+        request, text, hint, *snapshots = payload
         if self.quick_correction_request is not request:
             return
         self.quick_correction_request = None
@@ -2153,7 +2154,9 @@ class DitadoLocalApp:
         self.quick_correction_active = True
         dialog = QuickCorrectionDialog(
             self.root, text, request[2],
-            lambda wrong, correct: self._save_quick_correction(request[1], wrong, correct), hint)
+            lambda wrong, correct: self._save_quick_correction(request[1], wrong, correct), hint,
+            on_saved=lambda correct: self._apply_quick_correction(
+                request[1], snapshots[0] if snapshots else request[3], text, correct))
         self.quick_correction_dialog = dialog
         def check_closed():
             if not dialog.is_open():
@@ -2161,6 +2164,35 @@ class DitadoLocalApp:
             elif not self.closing:
                 self.root.after(250, check_closed)
         check_closed()
+
+    def _apply_quick_correction(self, profile, target, original, correct):
+        if profile != str(self.history.path) or self.closing:
+            return
+        if getattr(self, "quick_replacement", None):
+            self.quick_replacement[0].set()
+        cancellation = threading.Event()
+        request = (cancellation, profile)
+        self.quick_replacement = request
+        foreground = self.desktop.basic_focus().window
+        def replace():
+            applied = False
+            try:
+                if self.desktop.basic_focus().window == foreground:
+                    applied = self.desktop.replace_selected_text(target, original, correct, cancellation)
+            except Exception:
+                pass
+            self.events.put(("quick_correction_applied", (request, applied, correct)))
+        threading.Thread(target=replace, daemon=True).start()
+
+    def _finish_quick_correction_applied(self, payload):
+        request, applied, correct = payload
+        if (getattr(self, "quick_replacement", None) is not request
+                or request[0].is_set() or request[1] != str(self.history.path) or self.closing):
+            return
+        self.quick_replacement = None
+        if not applied:
+            self._copy_to_clipboard(correct)
+        self.result_notification.show_correction(applied)
 
     def _save_quick_correction(self, profile, wrong, correct):
         if profile != str(self.history.path):
@@ -2827,6 +2859,9 @@ class DitadoLocalApp:
         self._start_cloud_task(operation)
 
     def _refresh_after_cloud_profile_change(self):
+        replacement = getattr(self, "quick_replacement", None)
+        if replacement and replacement[1] != str(self.history.path):
+            replacement[0].set()
         if hasattr(self, "correction_gesture_option"):
             self.correction_gesture_option.set(self.config.get("quick_correction_gesture", DEFAULT_CORRECTION_GESTURE))
         self._refresh_agent_identity()
@@ -3797,9 +3832,7 @@ class DitadoLocalApp:
         def capture():
             text, error = "", ""
             try:
-                text, _snapshot = self.desktop.selected_text(target, cancellation)
-                if not text and not cancellation.is_set() and self.desktop.copy_native_selection(target):
-                    text = self._read_clipboard_text()
+                text, _snapshot = self.desktop.capture_selection(target, cancellation)
                 if len(text) > 32000:
                     raise ValueError("A seleção está longa demais. Selecione um trecho menor para editar no chat.")
             except Exception as problem:
@@ -3808,7 +3841,7 @@ class DitadoLocalApp:
             self.events.put(("agent_chat_prefill_ready", (request, text, error)))
 
         threading.Thread(target=capture, daemon=True).start()
-        self.root.after(2500, lambda: self._expire_agent_chat_prefill(request))
+        self.root.after(4000, lambda: self._expire_agent_chat_prefill(request))
 
     def _expire_agent_chat_prefill(self, request):
         if getattr(self, "chat_prefill_request", None) is request:
@@ -4146,6 +4179,8 @@ class DitadoLocalApp:
                 title, subtitle, color = payload
                 self.status.set(title)
                 self.overlay.show("processing", title, subtitle, color)
+            elif event == "quick_correction_applied":
+                self._finish_quick_correction_applied(payload)
             elif event == "quick_correction_capture":
                 self._capture_quick_correction(payload)
             elif event == "quick_correction_ready":
@@ -4272,6 +4307,8 @@ class DitadoLocalApp:
             self.correction_gesture.stop()
         if getattr(self, "quick_correction_request", None):
             self.quick_correction_request[0].set()
+        if getattr(self, "quick_replacement", None):
+            self.quick_replacement[0].set()
         if self.chat_hotkey:
             self.chat_hotkey.stop()
         self.agent_selection_cancelled.set()

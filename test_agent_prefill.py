@@ -12,7 +12,7 @@ class PrefillTests(unittest.TestCase):
         app.recording = app.processing = app.closing = False
         app.agent_chat_window = None
         app.desktop = Mock()
-        app.desktop.selected_text.return_value = ('Linha 1\n\nLinha 2', None)
+        app.desktop.capture_selection.return_value = ('Linha 1\n\nLinha 2', None)
         app.desktop.copy_native_selection.return_value = False
         app.history = Mock(path='profile-a')
         app.root = Mock()
@@ -45,16 +45,14 @@ class PrefillTests(unittest.TestCase):
 
     def test_empty_selection_does_not_insert_old_clipboard(self):
         app = self.app()
-        app.desktop.selected_text.return_value = ('', None)
+        app.desktop.capture_selection.return_value = ('', None)
         app._finish_agent_chat_prefill(self.capture(app))
         app._read_clipboard_text.assert_not_called()
         app._open_new_agent_chat.assert_called_once_with(initial_text='')
 
     def test_native_copy_only_reads_clipboard_after_successful_selection_copy(self):
         app = self.app()
-        app.desktop.selected_text.return_value = ('', None)
-        app.desktop.copy_native_selection.return_value = True
-        app._read_clipboard_text.return_value = 'Native selected text'
+        app.desktop.capture_selection.return_value = ('Native selected text', None)
         app._finish_agent_chat_prefill(self.capture(app))
         app._open_new_agent_chat.assert_called_once_with(initial_text='Native selected text')
 
