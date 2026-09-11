@@ -20,6 +20,8 @@ A conta da nuvem é opcional e o ditado continua funcionando sem ela.
   da área de transferência, silenciamento durante gravação, idioma de transcrição e
   limite do histórico, além do nome e aliases usados pelo agente para reconhecer o autor
   (`user_identity`) e do atalho editável para abrir o chat (`agent_chat_hotkey`).
+  O gesto de correção rápida (`quick_correction_gesture`) também sincroniza,
+  inclusive quando desativado, e é aplicado sem reiniciar o aplicativo.
   Salvar identificação ou atalho solicita sincronização imediata. Em outro PC,
   o atalho restaurado é registrado localmente; se estiver ocupado, o app avisa e
   mantém o atalho que já estava funcionando naquele PC.

@@ -6,7 +6,7 @@ on:
       version:
         description: Version without the v prefix
         required: true
-        default: 0.4.1
+        default: 0.4.2
 
 permissions:
   contents: write
@@ -30,7 +30,7 @@ jobs:
 
       - name: Verify
         run: |
-          python -m py_compile ditado_ai.py ditado_harness.py ditado_audio.py ditado_chat.py ditado_cloud.py ditado_desktop.py ditado_hotkey.py ditado_notification.py ditado_local.pyw ditado_ollama.py ditado_storage.py ditado_theme.py
+          python -m py_compile ditado_ai.py ditado_harness.py ditado_audio.py ditado_chat.py ditado_cloud.py ditado_desktop.py ditado_hotkey.py ditado_notification.py ditado_quick_correction.py ditado_local.pyw ditado_ollama.py ditado_storage.py ditado_theme.py
           python -m unittest discover -v
 
       - name: Package

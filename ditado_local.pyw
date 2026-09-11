@@ -68,6 +68,9 @@ from ditado_audio import PlaybackMuteController
 from ditado_chat import AgentChatWindow
 from ditado_desktop import DesktopTextAccess
 from ditado_notification import ResultNotification
+from ditado_quick_correction import (
+    CorrectionGesture, QuickCorrectionDialog, CORRECTION_GESTURES, DEFAULT_CORRECTION_GESTURE,
+)
 from ditado_hotkey import AgentChatHotkey, DEFAULT_CHAT_SHORTCUT, CHAT_SHORTCUT_CHOICES, parse_chat_shortcut
 from ditado_ollama import (
     OllamaSetupError,
@@ -553,6 +556,13 @@ class DitadoLocalApp:
         self.overlay = FloatingOverlay(self.root)
         self.result_notification = ResultNotification(self.root)
         self.desktop = DesktopTextAccess()
+        self.quick_correction_request = None
+        self.quick_correction_dialog = None
+        self.quick_correction_active = False
+        self.correction_gesture = CorrectionGesture(
+            lambda: self.config.get("quick_correction_gesture", DEFAULT_CORRECTION_GESTURE),
+            self._on_quick_correction_gesture)
+        self.correction_gesture.start()
         self.paste_target = None
         self.capture_error = ""
         threading.Thread(target=self.desktop.prepare, daemon=True).start()
@@ -1137,6 +1147,15 @@ class DitadoLocalApp:
         ).pack(anchor="w", padx=18)
 
         add_card = ctk.CTkFrame(tab, fg_color="#17171D", corner_radius=16)
+        quick_row = ctk.CTkFrame(tab, fg_color="transparent")
+        quick_row.pack(fill="x", padx=18, pady=(12, 0))
+        ctk.CTkLabel(quick_row, text="Correção rápida:").pack(side="left", padx=(0, 10))
+        self.correction_gesture_option = ctk.CTkOptionMenu(
+            quick_row, values=list(CORRECTION_GESTURES), width=230,
+            command=self._save_correction_gesture)
+        self.correction_gesture_option.set(self.config.get("quick_correction_gesture", DEFAULT_CORRECTION_GESTURE))
+        self.correction_gesture_option.pack(side="left")
+        ctk.CTkLabel(quick_row, text="Salvo com sua conta").pack(side="left", padx=10)
         add_card.pack(fill="x", padx=18, pady=16)
         form = ctk.CTkFrame(add_card, fg_color="transparent")
         form.pack(fill="x", padx=14, pady=14)
@@ -2088,6 +2107,80 @@ class DitadoLocalApp:
         else:
             self.status.set("Preencha a forma errada e a forma correta.")
 
+    def _save_correction_gesture(self, value):
+        if value not in CORRECTION_GESTURES:
+            return
+        self.config.set("quick_correction_gesture", value)
+        self._sync_after_local_change("Gesto de correção salvo.", success_message="Gesto de correção salvo na nuvem.")
+
+    def _on_quick_correction_gesture(self, x, y):
+        # Called on the mouse hook: capture only metadata and enqueue; never block input.
+        if (self.closing or self.recording or self.processing
+                or self.quick_correction_request or self.quick_correction_active):
+            return False
+        target = self.desktop.basic_focus()
+        if not self.desktop.target_at_point(target, x, y):
+            return False
+        request = (threading.Event(), str(self.history.path), (x, y), target)
+        self.quick_correction_request = request
+        self.events.put(("quick_correction_capture", request))
+        return True
+
+    def _capture_quick_correction(self, request):
+        if self.quick_correction_request is not request:
+            return
+        def capture():
+            text, hint = "", ""
+            try:
+                text, _snapshot = self.desktop.selected_text(request[3], request[0], max_chars=2048)
+                if not text:
+                    hint = "Seleção indisponível neste aplicativo. Cole a forma errada abaixo."
+            except Exception:
+                hint = "Não consegui ler a seleção. Cole um trecho de até 2.048 caracteres."
+            self.events.put(("quick_correction_ready", (request, text, hint)))
+        threading.Thread(target=capture, daemon=True).start()
+        self.root.after(2500, lambda: self._finish_quick_correction(
+            (request, "", "A seleção demorou para responder. Cole a forma errada abaixo.")))
+
+    def _finish_quick_correction(self, payload):
+        request, text, hint = payload
+        if self.quick_correction_request is not request:
+            return
+        self.quick_correction_request = None
+        request[0].set()
+        if self.closing or request[1] != str(self.history.path):
+            return
+        self.quick_correction_active = True
+        dialog = QuickCorrectionDialog(
+            self.root, text, request[2],
+            lambda wrong, correct: self._save_quick_correction(request[1], wrong, correct), hint)
+        self.quick_correction_dialog = dialog
+        def check_closed():
+            if not dialog.is_open():
+                self.quick_correction_active = False
+            elif not self.closing:
+                self.root.after(250, check_closed)
+        check_closed()
+
+    def _save_quick_correction(self, profile, wrong, correct):
+        if profile != str(self.history.path):
+            raise ValueError("A conta mudou. Feche e abra a correção novamente.")
+        wrong, correct = wrong.strip(), correct.strip()
+        if not wrong or not correct:
+            raise ValueError("Preencha a forma errada e a grafia correta.")
+        if max(len(wrong), len(correct)) > 2048:
+            raise ValueError("Use até 2.048 caracteres em cada campo.")
+        if wrong == correct:
+            raise ValueError("As duas grafias são iguais.")
+        existing = self.config.get("corrections", [])
+        if len(existing) >= 200 and not any(item.get("wrong", "").casefold() == wrong.casefold() for item in existing):
+            raise ValueError("O dicionário tem 200 correções. Remova uma antes de adicionar outra.")
+        if not self.config.add_correction(wrong, correct):
+            raise ValueError("Não foi possível salvar a correção.")
+        self._rebuild_corrections()
+        self._sync_corrections_after_change("Correção salva.")
+        return self.status.get()
+
     def _remove_correction(self, wrong):
         self.config.remove_correction(wrong)
         self._rebuild_corrections()
@@ -2734,6 +2827,8 @@ class DitadoLocalApp:
         self._start_cloud_task(operation)
 
     def _refresh_after_cloud_profile_change(self):
+        if hasattr(self, "correction_gesture_option"):
+            self.correction_gesture_option.set(self.config.get("quick_correction_gesture", DEFAULT_CORRECTION_GESTURE))
         self._refresh_agent_identity()
         self._refresh_agent_shortcut()
         self.auto_paste.set(bool(self.config.get("auto_paste", True)))
@@ -4051,6 +4146,10 @@ class DitadoLocalApp:
                 title, subtitle, color = payload
                 self.status.set(title)
                 self.overlay.show("processing", title, subtitle, color)
+            elif event == "quick_correction_capture":
+                self._capture_quick_correction(payload)
+            elif event == "quick_correction_ready":
+                self._finish_quick_correction(payload)
             elif event == "chat_hotkey_status":
                 source, ok, message = payload
                 if source is not self.chat_hotkey:
@@ -4169,6 +4268,10 @@ class DitadoLocalApp:
 
     def _exit_app(self):
         self.closing = True
+        if getattr(self, "correction_gesture", None):
+            self.correction_gesture.stop()
+        if getattr(self, "quick_correction_request", None):
+            self.quick_correction_request[0].set()
         if self.chat_hotkey:
             self.chat_hotkey.stop()
         self.agent_selection_cancelled.set()

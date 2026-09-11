@@ -12,5 +12,6 @@
   "history_limit": 150,
   "startup_enabled": true,
   "user_identity": {"display_name": "", "aliases": []},
-  "agent_chat_hotkey": "Ctrl + Windows"
+  "agent_chat_hotkey": "Ctrl + Windows",
+  "quick_correction_gesture": "Ctrl + clique direito"
 }

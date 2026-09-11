@@ -33,6 +33,8 @@ class DesktopTextAccess:
     def __init__(self):
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.user32.GetForegroundWindow.restype = wintypes.HWND
+        self.user32.WindowFromPoint.argtypes = [wintypes.POINT]
+        self.user32.WindowFromPoint.restype = wintypes.HWND
         self.user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
         self.user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUIThreadInfo)]
         self.user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
@@ -55,6 +57,11 @@ class DesktopTextAccess:
         if not self.user32.GetGUIThreadInfo(thread, ctypes.byref(info)):
             return FocusTarget(int(window), 0)
         return FocusTarget(int(window), int(info.hwndFocus or 0))
+
+    def target_at_point(self, target, x, y):
+        window = self.user32.WindowFromPoint(wintypes.POINT(x, y))
+        return bool(window and target and target.window
+                    and self.user32.GetAncestor(window, 2) == target.window)
 
     def same_window(self, target):
         now = self.basic_focus()

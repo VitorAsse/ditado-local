@@ -145,6 +145,22 @@ travessões ou hífens como separadores no meio das frases. A normalização fun
 também com a revisão gramatical desligada ou indisponível. Listas, palavras
 compostas, intervalos numéricos, links, código e JSON preservam sua pontuação.
 
+### Correções sem abrir a janela principal
+
+Selecione uma palavra ou frase e use `Ctrl + clique direito`. Clique em
+`Adicionar correção`, digite a grafia correta e pressione `Enter`. `Esc` fecha
+sem salvar. Você também pode usar o ×, o botão Cancelar ou clicar fora do
+formulário para desistir. O clique direito normal continua pertencendo ao aplicativo de origem.
+
+Em **Correções > Correção rápida**, escolha outro gesto com Ctrl, Shift ou Alt,
+ou desative o recurso. A alteração vale imediatamente e acompanha a conta na
+nuvem. O cadastro usa o mesmo dicionário e a mesma sincronização da aba Correções.
+Quando estiver offline, fica salvo no PC até a próxima sincronização.
+
+A seleção depende da acessibilidade oferecida pelo aplicativo de origem.
+Se ela não estiver disponível, o formulário permite colar a forma errada
+manualmente; não reutiliza texto antigo da área de transferência.
+
 ### Regras permanentes
 
 Regras são preferências sempre ativas, aplicadas na geração. Um pedido explícito de

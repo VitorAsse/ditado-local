@@ -2,6 +2,15 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.2 - 2026-09-11
+
+- Cadastro rápido de correções por Ctrl + clique direito, com formulário discreto
+  e Enter para salvar, sem abrir a janela principal.
+- Gesto configurável na aba Correções, aplicado imediatamente e sincronizado com
+  a conta, assim como as correções adicionadas pelo formulário rápido.
+- Botão de fechar na opção inicial e botão Cancelar no formulário. Esc ou clicar
+  fora também descartam o rascunho sem cadastrar uma correção.
+
 ## 0.4.1 - 2026-09-11
 
 - Regra global de escrita natural no Agente e na revisão de transcrição: evitar

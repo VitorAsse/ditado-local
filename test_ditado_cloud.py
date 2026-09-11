@@ -357,7 +357,8 @@ class CloudSyncTests(unittest.TestCase):
                   "capture_clipboard_history": True, "mute_playback_while_recording": False,
                   "transcription_language": "en", "history_limit": 80,
                   "user_identity": {"display_name": "Morgan Lee", "aliases": ["Morgan", "M. Lee"]},
-                  "agent_chat_hotkey": "Ctrl + Shift + Enter"}
+                  "agent_chat_hotkey": "Ctrl + Shift + Enter",
+                  "quick_correction_gesture": "Alt + clique direito"}
         for key, value in values.items():
             config.set(key, value)
         config.set("microphone_name", "Microfone do primeiro PC")

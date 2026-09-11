@@ -82,6 +82,7 @@ $applicationFiles = @(
     "ditado_chat.py",
     "ditado_desktop.py",
     "ditado_notification.py",
+    "ditado_quick_correction.py",
     "ditado_hotkey.py",
     "ditado_cloud.py",
     "ditado_local.pyw",

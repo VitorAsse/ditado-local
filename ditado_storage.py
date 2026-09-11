@@ -120,6 +120,7 @@ class AppConfig:
         "startup_enabled": True,
         "user_identity": {"display_name": "", "aliases": []},
         "agent_chat_hotkey": "Ctrl + Windows",
+        "quick_correction_gesture": "Ctrl + clique direito",
     }
 
     SYNCED_PREFERENCE_KEYS = {
@@ -131,6 +132,7 @@ class AppConfig:
         "history_limit",
         "user_identity",
         "agent_chat_hotkey",
+        "quick_correction_gesture",
     }
 
     # These choices describe this PC, rather than the user's writing preferences.
