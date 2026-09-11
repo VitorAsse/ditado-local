@@ -10,5 +10,7 @@
   "rules": [],
   "skills": [],
   "history_limit": 150,
-  "startup_enabled": true
+  "startup_enabled": true,
+  "user_identity": {"display_name": "", "aliases": []},
+  "agent_chat_hotkey": "Ctrl + Windows"
 }

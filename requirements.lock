@@ -148,7 +148,9 @@ colorama==0.4.6 \
 comtypes==1.4.16 \
     --hash=sha256:cd66d1add01265cface4df51ba1e31cd1657e04463c281c802e737e79e1ba93c \
     --hash=sha256:e18d85179ff12955524c5a8c3bc09cb3c0d890f1da4d7123d14244c7b78f84c8
-    # via pycaw
+    # via
+    #   -r requirements.txt
+    #   pycaw
 cryptography==50.0.1 \
     --hash=sha256:01f41478cf33fc605a6a089cd56d28b45c6c0b45a1928b61797f2621a04bac71 \
     --hash=sha256:05ba322c4da95b262a212c345af888ef2c37c88c0509756ea00a0e6d68850f23 \

@@ -1,132 +1,145 @@
 import ast
 import pathlib
+import queue
 import threading
 import time
 import types
 import unittest
-import uuid
+from unittest.mock import Mock
 
 SOURCE = pathlib.Path(__file__).with_name('ditado_local.pyw')
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
 app_class = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'DitadoLocalApp')
-capture = next(n for n in app_class.body if isinstance(n, ast.FunctionDef) and n.name == '_capture_selected_text')
+
+
+def method(name, **env):
+    node = next(n for n in app_class.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), env)
+    return env[name]
 
 
 class CaptureTests(unittest.TestCase):
     def setUp(self):
-        self.held = {0xA2, 0xA4}
-        self.actions = []
-        self.clipboard = 'previous clipboard'
-        self.selection = 'selected text'
-        self.cancel = threading.Event()
-        self.ready = threading.Event()
-        self.fail_copy = False
+        self.cancel, self.ready = threading.Event(), threading.Event()
+        self.target = object()
+        self.copy = Mock()
         self.app = types.SimpleNamespace(
             closing=False, agent_selected_text='', history_dirty=False,
-            _read_clipboard_text=lambda: self.clipboard,
-            _restore_target_window=lambda: self.actions.append(('focus',)),
-            history=types.SimpleNamespace(add=lambda *args: self.actions.append(('history', *args))),
+            _read_clipboard_text=Mock(return_value='native selection'),
+            _restore_target_window=Mock(), keyboard_controller=Mock(),
+            history=Mock(), events=queue.SimpleQueue(), desktop=Mock(),
         )
+        self.app.desktop.selected_text.return_value = ('selected text', self.target)
+        self.app.desktop.copy_native_selection.return_value = False
+        self.capture = method('_capture_selected_text', time=time,
+                              pyperclip=types.SimpleNamespace(copy=self.copy))
 
-        def copy(text):
-            self.actions.append(('clipboard', text))
-            self.clipboard = text
+    def run_capture(self):
+        self.capture(self.app, self.cancel, self.ready, self.target)
 
-        def press(key):
-            self.actions.append(('press', key))
-            if key == 'c':
-                self.assertFalse(self.held, 'C injected while physical modifiers are down')
-                self.assertEqual(self.actions[-2], ('press', 'ctrl_l'))
-                if self.fail_copy:
-                    raise RuntimeError('injection failed')
-                if self.selection is not None:
-                    self.clipboard = self.selection
-
-        self.app.keyboard_controller = types.SimpleNamespace(
-            press=press, release=lambda key: self.actions.append(('release', key)))
-        env = dict(
-            ctypes=types.SimpleNamespace(windll=types.SimpleNamespace(user32=types.SimpleNamespace(
-                GetAsyncKeyState=lambda key: 0x8000 if key in self.held else 0))),
-            time=time, uuid=uuid, pyperclip=types.SimpleNamespace(copy=copy),
-            pynput_keyboard=types.SimpleNamespace(Key=types.SimpleNamespace(ctrl_l='ctrl_l')),
-        )
-        exec(compile(ast.Module(body=[capture], type_ignores=[]), str(SOURCE), 'exec'), env)
-        self.run_capture = lambda: env['_capture_selected_text'](self.app, self.cancel, self.ready)
-
-    def start(self):
-        self.worker = threading.Thread(target=self.run_capture)
-        self.worker.start()
-        self.addCleanup(self.cleanup)
-
-    def cleanup(self):
-        self.cancel.set()
-        self.worker.join(2)
-        self.assertFalse(self.worker.is_alive())
-
-    def test_hold_then_release_both(self):
-        self.start()
-        time.sleep(.10)
-        self.assertEqual(self.actions, [])
-        self.held.remove(0xA2)
-        time.sleep(.08)
-        self.assertEqual(self.actions, [])
-        self.held.clear()
-        self.assertTrue(self.ready.wait(1))
+    def test_copies_immediately_while_modifiers_held_without_injecting_keys(self):
+        self.app.desktop.modifiers_down.return_value = True
+        self.run_capture()
+        self.copy.assert_called_once_with('selected text')
         self.assertEqual(self.app.agent_selected_text, 'selected text')
-        self.assertEqual([a for a in self.actions if a[0] in ('press', 'release')],
-                         [('press', 'ctrl_l'), ('press', 'c'), ('release', 'c'), ('release', 'ctrl_l')])
+        self.app.keyboard_controller.press.assert_not_called()
+        self.app._restore_target_window.assert_not_called()
+        self.app.desktop.modifiers_down.assert_not_called()
+        self.assertTrue(self.ready.is_set())
 
-    def test_each_modifier_blocks_copy(self):
-        for key in (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C):
-            with self.subTest(key=key):
-                self.held = {key}
-                self.cancel.clear()
-                self.ready.clear()
-                self.start()
-                time.sleep(.03)
-                self.assertEqual(self.actions, [])
-                self.cancel.set()
-                self.worker.join(1)
-                self.assertTrue(self.ready.is_set())
+    def test_snapshot_survives_later_selection_change(self):
+        self.run_capture()
+        self.app.desktop.selected_text.return_value = ('other text', object())
+        self.assertEqual(self.app.agent_selected_text, 'selected text')
+        self.assertEqual(self.app.paste_target, self.target)
 
-    def test_cancel_during_hold_does_not_touch_clipboard_or_keys(self):
-        self.start()
-        self.cancel.set()
-        self.assertTrue(self.ready.wait(1))
-        self.assertEqual(self.actions, [])
-        self.assertEqual(self.clipboard, 'previous clipboard')
+    def test_cancelled_read_cannot_publish_selection(self):
+        def read(*_):
+            self.cancel.set()
+            return 'selected text', self.target
+        self.app.desktop.selected_text.side_effect = read
+        self.run_capture()
+        self.copy.assert_not_called()
+        self.app.history.add.assert_not_called()
+        self.assertTrue(self.ready.is_set())
 
-    def test_closing_does_not_inject(self):
+    def test_closing_does_not_publish(self):
         self.app.closing = True
         self.run_capture()
-        self.assertTrue(self.ready.is_set())
-        self.assertEqual(self.actions, [])
+        self.copy.assert_not_called()
 
-    def test_no_selection_restores_clipboard(self):
-        self.held.clear()
-        self.selection = None
+    def test_no_selection_preserves_existing_clipboard(self):
+        self.app.desktop.selected_text.return_value = ('', self.target)
         self.run_capture()
-        self.assertEqual(self.clipboard, 'previous clipboard')
+        self.copy.assert_not_called()
         self.assertEqual(self.app.agent_selected_text, '')
+        self.assertIn('seleção', self.app.capture_error)
 
-    def test_copy_failure_releases_ctrl_and_restores_empty_clipboard(self):
-        self.held.clear()
-        self.clipboard = ''
-        self.fail_copy = True
+    def test_native_copy_fallback_uses_only_actual_selection(self):
+        self.app.desktop.selected_text.return_value = ('', self.target)
+        self.app.desktop.copy_native_selection.return_value = True
         self.run_capture()
-        self.assertIn(('release', 'ctrl_l'), self.actions)
-        self.assertEqual(self.clipboard, '')
-        self.assertTrue(self.ready.is_set())
+        self.copy.assert_called_once_with('native selection')
 
-    def test_old_worker_signals_own_event(self):
-        new_ready = threading.Event()
-        self.app.selection_ready = new_ready
+    def test_oversized_selection_rejected_without_truncation(self):
+        self.app.desktop.selected_text.return_value = ('x' * 32001, self.target)
+        self.run_capture()
+        self.copy.assert_not_called()
+        self.assertIn('longa demais', self.app.capture_error)
+
+    def test_old_worker_signals_only_its_own_event(self):
+        self.app.selection_ready = threading.Event()
         self.cancel.set()
         self.run_capture()
         self.assertTrue(self.ready.is_set())
-        self.assertFalse(new_ready.is_set())
+        self.assertFalse(self.app.selection_ready.is_set())
+
+
+class DeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.app = types.SimpleNamespace(
+            desktop=Mock(), _read_clipboard_text=Mock(return_value='result'),
+            _paste_into_active_app=Mock(return_value=True), events=queue.SimpleQueue(),
+            _restore_target_window=Mock())
+        self.app.desktop.modifiers_down.return_value = False
+        self.app.desktop.can_paste.return_value = True
+        self.app.desktop.same_window.return_value = True
+        self.deliver = method('_deliver_result')
+
+    def test_pastes_in_unchanged_writable_field_without_refocusing(self):
+        self.deliver(self.app, 'result', 'dictation', object())
+        self.app._paste_into_active_app.assert_called_once_with()
+        self.app._restore_target_window.assert_not_called()
+        self.assertTrue(self.app.events.empty())
+
+    def test_both_modes_notify_when_no_writable_field(self):
+        self.app.desktop.can_paste.return_value = False
+        for mode in ('agent', 'dictation'):
+            self.deliver(self.app, 'result', mode, None)
+            self.assertEqual(('clipboard_result_ready', (mode, 'result')), self.app.events.get())
+        self.app._paste_into_active_app.assert_not_called()
+
+    def test_focus_change_during_check_does_not_paste(self):
+        self.app.desktop.same_window.return_value = False
+        self.deliver(self.app, 'result', 'agent', object())
+        self.app._paste_into_active_app.assert_not_called()
+        self.assertFalse(self.app.events.empty())
+
+    def test_clipboard_change_during_check_does_not_paste_unrelated_text(self):
+        self.app._read_clipboard_text.side_effect = ['result', 'another copy']
+        self.deliver(self.app, 'result', 'dictation', object())
+        self.app._paste_into_active_app.assert_not_called()
+
+    def test_held_modifiers_do_not_inject_a_shortcut(self):
+        self.app.desktop.modifiers_down.return_value = True
+        self.deliver(self.app, 'result', 'agent', object())
+        self.app._paste_into_active_app.assert_not_called()
+
+    def test_failed_injection_notifies(self):
+        self.app._paste_into_active_app.return_value = False
+        self.deliver(self.app, 'result', 'agent', object())
+        self.assertEqual(('clipboard_result_ready', ('agent', 'result')), self.app.events.get())
 
 
 if __name__ == '__main__':
-    compile(SOURCE.read_text(encoding='utf-8'), str(SOURCE), 'exec')
-    unittest.main(verbosity=2)
+    unittest.main()

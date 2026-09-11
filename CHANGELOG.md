@@ -2,6 +2,25 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.0 - 2026-09-11
+
+- Novo chat do Agente por voz ou texto, mesmo sem seleção. O atalho padrão
+  `Ctrl + Windows` abre o texto selecionado como rascunho editável, sem enviar.
+  O atalho pode ser alterado na aba Agente, com aviso em caso de conflito.
+- A captura da seleção começa ao acionar o agente por voz. Depois do aviso de
+  captura, é possível usar o mouse e mudar de janela enquanto o agente trabalha.
+- Resultados ficam na área de transferência. Quando não há colagem no campo
+  original, uma notificação discreta aparece no canto inferior direito sem tirar o foco.
+- Melhorias nas instruções do agente para preservar contexto, autoria, motivo do
+  contato e idioma, com parágrafos legíveis e formatos específicos para listas,
+  respostas de uma linha, código e JSON.
+- Skills podem combinar uma tarefa com um estilo complementar. Limites de contexto
+  e de cadastro passam a avisar o usuário em vez de cortar conteúdo silenciosamente.
+- Nome e aliases usados nas conversas, atalho do chat, skills completas e
+  preferências adicionais acompanham a conta na sincronização criptografada.
+- Corrigidas a persistência da fila offline, a leitura paginada da nuvem e a
+  separação dos dados ao trocar de conta. Conversas livres também ficam no histórico.
+
 ## 0.3.3 - 2026-09-09
 
 - Corrigida a inserção do caractere `₢` ao segurar `Ctrl + Alt` no modo

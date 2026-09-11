@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.3.3"
+    [string]$Version = "0.4.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,8 +51,12 @@ $packageFiles = @(
     "THIRD_PARTY_NOTICES.md",
     "config.example.json",
     "ditado_ai.py",
+    "ditado_harness.py",
     "ditado_audio.py",
     "ditado_chat.py",
+    "ditado_desktop.py",
+    "ditado_notification.py",
+    "ditado_hotkey.py",
     "ditado_cloud.py",
     "ditado_local.pyw",
     "ditado_ollama.py",
@@ -85,13 +89,14 @@ Copy-Item `
 
 $docsSource = Join-Path $repositoryRoot "docs"
 $docsDestination = Join-Path $stagingRoot "docs"
-if (-not (Test-Path -LiteralPath (Join-Path $docsSource "CLOUD_SYNC.md"))) {
-    throw "Documentacao de nuvem ausente: docs\CLOUD_SYNC.md"
-}
 New-Item -ItemType Directory -Path $docsDestination -Force | Out-Null
-Copy-Item `
-    -LiteralPath (Join-Path $docsSource "CLOUD_SYNC.md") `
-    -Destination (Join-Path $docsDestination "CLOUD_SYNC.md")
+foreach ($documentName in @("CLOUD_SYNC.md", "AGENT_HARNESS.md")) {
+    $documentSource = Join-Path $docsSource $documentName
+    if (-not (Test-Path -LiteralPath $documentSource)) {
+        throw "Documentacao obrigatoria ausente: docs\$documentName"
+    }
+    Copy-Item -LiteralPath $documentSource -Destination (Join-Path $docsDestination $documentName)
+}
 
 $scriptsSource = Join-Path $repositoryRoot "scripts"
 $scriptsDestination = Join-Path $stagingRoot "scripts"

@@ -337,6 +337,8 @@ class ModelRuntimeTests(unittest.TestCase):
 class PlaybackMuteIntegrationTests(unittest.TestCase):
     def test_starting_dictation_mutes_playback_when_enabled(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app._begin_text_capture = Mock()
+        app.agent_selection_cancelled = DITADO_LOCAL.threading.Event()
         app.recording = False
         app.processing = False
         app.target_window = None
@@ -374,6 +376,8 @@ class PlaybackMuteIntegrationTests(unittest.TestCase):
 
     def test_starting_dictation_keeps_playback_when_disabled(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app._begin_text_capture = Mock()
+        app.agent_selection_cancelled = DITADO_LOCAL.threading.Event()
         app.recording = False
         app.processing = False
         app.target_window = None
@@ -399,6 +403,8 @@ class PlaybackMuteIntegrationTests(unittest.TestCase):
 
     def test_start_failure_after_muting_restores_playback(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app._begin_text_capture = Mock()
+        app.agent_selection_cancelled = DITADO_LOCAL.threading.Event()
         app.recording = False
         app.processing = False
         app.target_window = None
@@ -452,6 +458,7 @@ class PlaybackMuteIntegrationTests(unittest.TestCase):
 
     def test_exiting_the_app_restores_playback(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.chat_hotkey = Mock()
         app.closing = False
         app.agent_selection_cancelled = DITADO_LOCAL.threading.Event()
         app.stream = None
@@ -462,6 +469,7 @@ class PlaybackMuteIntegrationTests(unittest.TestCase):
 
         app._exit_app()
 
+        app.chat_hotkey.stop.assert_called_once_with()
         app.playback_mute.restore.assert_called_once_with()
 
 
@@ -634,14 +642,9 @@ class VoiceSkillRoutingTests(unittest.TestCase):
         self.assertEqual(1, client.chat.call_count)
         self.assertNotIn("REGRA OBRIGATORIA DE IDIOMA", system_prompt)
 
-    def test_enabled_rule_is_applied_and_reviewed(self):
+    def test_enabled_rule_is_applied_without_unconditional_review(self):
         client = OllamaClient()
-        client.chat = Mock(
-            side_effect=[
-                "Você poderia compartilhar a atualização mais recente?",
-                "Could you share the latest update?",
-            ]
-        )
+        client.chat = Mock(return_value="Could you share the latest update?")
         rules = [
             {
                 "id": "preserve-english",
@@ -663,12 +666,10 @@ class VoiceSkillRoutingTests(unittest.TestCase):
         )
 
         self.assertEqual("Could you share the latest update?", result)
-        self.assertEqual(2, client.chat.call_count)
-        first_system_prompt = client.chat.call_args_list[0].args[0]
-        review_system_prompt = client.chat.call_args_list[1].args[0]
+        self.assertEqual(1, client.chat.call_count)
+        first_system_prompt = client.chat.call_args.args[0]
         self.assertIn("Manter respostas em inglês", first_system_prompt)
-        self.assertIn("REGRAS PERMANENTES DO USUÁRIO", first_system_prompt)
-        self.assertIn("Manter respostas em inglês", review_system_prompt)
+        self.assertIn("USER_PREFERENCES", first_system_prompt)
 
     def test_spoken_instruction_can_request_translation(self):
         client = OllamaClient()
@@ -691,12 +692,8 @@ class VoiceSkillRoutingTests(unittest.TestCase):
 
     def test_agent_retries_when_model_echoes_spoken_instruction(self):
         client = OllamaClient()
-        client.chat = Mock(
-            side_effect=[
-                "Deixe mais curto.",
-                "Texto mais curto.",
-            ]
-        )
+        client.chat = Mock(return_value="Deixe mais curto.")
+        client.chat_messages = Mock(return_value="Texto mais curto.")
 
         result = client.transform_selected_text(
             "Este é um texto selecionado que precisa ser reduzido.",
@@ -706,16 +703,13 @@ class VoiceSkillRoutingTests(unittest.TestCase):
         )
 
         self.assertEqual("Texto mais curto.", result)
-        self.assertEqual(2, client.chat.call_count)
+        self.assertEqual(1, client.chat.call_count)
+        self.assertEqual(1, client.chat_messages.call_count)
 
     def test_agent_rejects_instruction_echo_after_retry(self):
         client = OllamaClient()
-        client.chat = Mock(
-            side_effect=[
-                "Deixe mais curto.",
-                "deixe mais curto",
-            ]
-        )
+        client.chat = Mock(return_value="Deixe mais curto.")
+        client.chat_messages = Mock(return_value="deixe mais curto")
 
         with self.assertRaisesRegex(
             RuntimeError,
@@ -909,24 +903,18 @@ class AgentConversationTests(unittest.TestCase):
         app._restore_target_window = Mock()
         cancellation = DITADO_LOCAL.threading.Event()
 
-        with (
-            patch.object(DITADO_LOCAL.pyperclip, "copy") as copy,
-            patch.object(
-                DITADO_LOCAL.ctypes.windll.user32,
-                "GetAsyncKeyState",
-                return_value=0,
-            ),
-            patch.object(
-                cancellation,
-                "wait",
-                side_effect=lambda seconds: cancellation.set() if seconds == 0.16 else None,
-            ),
-        ):
-            app._capture_selected_text(cancellation, app.selection_ready)
+        app.desktop = Mock()
+        def read_selection(*_args):
+            cancellation.set()
+            return "Texto selecionado", None
+        app.desktop.selected_text.side_effect = read_selection
+        with patch.object(DITADO_LOCAL.pyperclip, "copy") as copy:
+            app._capture_selected_text(cancellation, app.selection_ready, None)
 
         self.assertEqual("", app.agent_selected_text)
         app.history.add.assert_not_called()
-        self.assertEqual("Texto anterior", copy.call_args.args[0])
+        copy.assert_not_called()
+        app.keyboard_controller.press.assert_not_called()
         self.assertTrue(app.selection_ready.is_set())
 
     def test_ctrl_space_never_starts_agent_with_stale_alt_state(self):
@@ -1235,6 +1223,7 @@ class AgentConversationTests(unittest.TestCase):
             side_effect=lambda audio: audio
         )
         app.agent_selected_text = ""
+        app.capture_error = ""
         app.selection_ready = DITADO_LOCAL.threading.Event()
         app.selection_ready.set()
         app.ollama = Mock()
@@ -1286,7 +1275,7 @@ class AgentConversationTests(unittest.TestCase):
         self.assertIn("Texto original com fatos importantes.", messages[1]["content"])
         self.assertIn("Resuma em um parágrafo.", messages[1]["content"])
         self.assertEqual("Resumo inicial.", messages[2]["content"])
-        self.assertEqual("Deixe ainda mais curto.", messages[3]["content"])
+        self.assertEqual("Deixe ainda mais curto.", json.loads(messages[3]["content"])["REQUEST"])
         self.assertEqual(
             ["user", "assistant", "user", "assistant"],
             [message["role"] for message in updated["messages"]],
@@ -1418,6 +1407,8 @@ class AgentConversationTests(unittest.TestCase):
     def test_agent_result_is_saved_with_its_conversation_context(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
         app.processing = True
+        app.paste_target = None
+        app._deliver_result = Mock()
         app.status = Mock()
         app.backend_text = Mock()
         app.model_backend = "Whisper"
@@ -1536,7 +1527,7 @@ class CloudCorrectionSyncTests(unittest.TestCase):
         self.assertFalse(started)
         app._start_cloud_task.assert_not_called()
         message = app.status.set.call_args.args[0]
-        self.assertIn("Salva neste PC", message)
+        self.assertIn("Dados salvos neste PC", message)
         self.assertIn("conecte a nuvem", message)
 
     def test_correction_change_waits_for_an_active_cloud_task(self):
@@ -1553,6 +1544,40 @@ class CloudCorrectionSyncTests(unittest.TestCase):
             "próxima sincronização",
             app.status.set.call_args.args[0],
         )
+
+    def test_skill_form_save_toggle_and_remove_request_cloud_sync(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app = self._app({"configured": True, "signed_in": True})
+            app.config = AppConfig(path=Path(folder) / "config.json")
+            app.editing_skill_id = None
+            app._reset_skill_form = Mock()
+            app._rebuild_skills = Mock()
+            app.skills_status_text = Mock()
+            for field, value in {
+                "skill_triggers_entry": "resumo; semanal",
+                "skill_examples_text": "Faça um resumo semanal.",
+                "skill_name_entry": "Resumo",
+                "skill_description_entry": "Resumir trabalho",
+                "skill_instructions_text": "Preserve os fatos.\nUse parágrafos.",
+            }.items():
+                widget = Mock()
+                widget.get.return_value = value
+                setattr(app, field, widget)
+            app.cloud.sync_once.return_value = {"remote_changed": True, "pushed": 1}
+            app._save_skill()
+            skill = app.config.get_skills()[0]
+            self.assertEqual(["resumo", "semanal"], skill["triggers"])
+            self.assertIn("\n", skill["instructions"])
+            result = app._start_cloud_task.call_args.args[0]()
+            self.assertTrue(result["profile_changed"])
+            app._start_cloud_task.reset_mock()
+            app._toggle_skill(skill["id"], False)
+            self.assertFalse(app.config.get_skills()[0]["enabled"])
+            app._start_cloud_task.assert_called_once()
+            app._start_cloud_task.reset_mock()
+            app._remove_skill(skill["id"])
+            self.assertEqual([], app.config.get_skills())
+            app._start_cloud_task.assert_called_once()
 
 
 class InstallerStartupTests(unittest.TestCase):

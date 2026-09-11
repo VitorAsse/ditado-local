@@ -66,6 +66,9 @@ from ditado_ai import (
 )
 from ditado_audio import PlaybackMuteController
 from ditado_chat import AgentChatWindow
+from ditado_desktop import DesktopTextAccess
+from ditado_notification import ResultNotification
+from ditado_hotkey import AgentChatHotkey, DEFAULT_CHAT_SHORTCUT, CHAT_SHORTCUT_CHOICES, parse_chat_shortcut
 from ditado_ollama import (
     OllamaSetupError,
     find_ollama_executable,
@@ -81,6 +84,7 @@ from ditado_cloud import (
     RecoveryKeyRequired,
 )
 from ditado_storage import AppConfig, HistoryStore
+from ditado_harness import normalize_identity
 from ditado_theme import (
     APP_COLORS,
     app_font,
@@ -90,6 +94,9 @@ from ditado_theme import (
 
 
 SAMPLE_RATE = 16_000
+SKILL_OUTPUT_MODES = {"Automático": "auto", "Mensagem": "chat_message", "Texto": "plain_prose",
+                      "Uma linha": "single_line", "Lista": "list", "Código": "code",
+                      "JSON": "json", "Preservar estrutura": "preserve_structure"}
 OVERLAY_WIDTH = 440
 OVERLAY_HEIGHT = 104
 INSTANCE_NAMESPACE = "".join(
@@ -498,7 +505,10 @@ class DitadoLocalApp:
         self.active_hotkey_session = None
         self.latest_dictation_hotkey_session = 0
         self.agent_chat_window = None
+        self.chat_hotkey = None
         self.agent_chat_entry_id = None
+        self.agent_chat_profile_path = None
+        self.voice_chat_target = None
         self.ignore_clipboard_until = 0.0
         self.history_dirty = True
         self.last_clipboard_text = self._read_clipboard_text()
@@ -541,6 +551,11 @@ class DitadoLocalApp:
         self.input_devices = self._get_input_devices()
         self._build_interface()
         self.overlay = FloatingOverlay(self.root)
+        self.result_notification = ResultNotification(self.root)
+        self.desktop = DesktopTextAccess()
+        self.paste_target = None
+        self.capture_error = ""
+        threading.Thread(target=self.desktop.prepare, daemon=True).start()
         if self.start_hidden:
             self.root.withdraw()
 
@@ -549,6 +564,7 @@ class DitadoLocalApp:
             on_release=self._on_key_release,
         )
         self.listener.start()
+        self._refresh_agent_shortcut()
         self.tray_icon = self._create_tray_icon()
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
@@ -1215,6 +1231,9 @@ class DitadoLocalApp:
         self.history_frame.pack(fill="both", expand=True, padx=18, pady=(0, 16))
 
     def _build_agent_tab(self, tab):
+        canvas = ctk.CTkScrollableFrame(tab, fg_color="transparent", corner_radius=0)
+        canvas.pack(fill="both", expand=True)
+        tab = canvas
         hero = ctk.CTkFrame(
             tab,
             fg_color=APP_COLORS["accent_tint"],
@@ -1248,6 +1267,7 @@ class DitadoLocalApp:
             font=app_font(size=11),
         ).pack(anchor="w", padx=20, pady=(7, 18))
 
+        self._build_agent_shortcut_controls(tab)
         examples = ctk.CTkFrame(
             tab,
             fg_color=APP_COLORS["surface"],
@@ -1263,6 +1283,8 @@ class DitadoLocalApp:
             font=app_font(size=10, weight="bold"),
         ).pack(anchor="w", padx=18, pady=(16, 9))
         for example in [
+            "O atalho configurado acima abre o chat com ou sem seleção",
+            "No chat: clique em Falar e depois em Parar e enviar",
             "Com seleção: Formate este texto como uma lista clara",
             "No chat: Agora deixe mais direto",
             "No chat: Mantenha o tom, mas reduza pela metade",
@@ -1324,6 +1346,103 @@ class DitadoLocalApp:
             font=app_font(size=10),
         ).pack(anchor="w", padx=16, pady=(0, 13))
 
+        identity_card = ctk.CTkFrame(tab, fg_color=APP_COLORS["surface"], corner_radius=15)
+        identity_card.pack(fill="x", padx=16, pady=(0, 16))
+        ctk.CTkLabel(identity_card, text="Como você aparece nas conversas", font=app_font(size=13, weight="bold")).pack(anchor="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(identity_card, text="Opcional. Ajuda o agente a reconhecer suas falas. Esta preferência acompanha sua conta.",
+                     wraplength=590, justify="left", font=app_font(size=10)).pack(anchor="w", padx=16)
+        self.agent_identity_name = ctk.CTkEntry(identity_card, placeholder_text="Seu nome nas conversas")
+        self.agent_identity_name.pack(fill="x", padx=16, pady=(8, 4))
+        self.agent_identity_aliases = ctk.CTkEntry(identity_card, placeholder_text="Outras formas do nome, separadas por vírgula")
+        self.agent_identity_aliases.pack(fill="x", padx=16, pady=4)
+        ctk.CTkButton(identity_card, text="Salvar identificação", command=self._save_agent_identity).pack(anchor="e", padx=16, pady=(4, 12))
+        self._refresh_agent_identity()
+
+    def _build_agent_shortcut_controls(self, tab):
+        card = ctk.CTkFrame(tab, fg_color=APP_COLORS["surface"], corner_radius=15)
+        card.pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkLabel(card, text="Atalho para abrir o Agente", font=app_font(size=13, weight="bold")).pack(anchor="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(card, text="Escolha uma opção ou digite outra combinação. Abre com a seleção para editar, sem enviar. O atalho acompanha sua conta.",
+                     wraplength=600, justify="left", font=app_font(size=10)).pack(anchor="w", padx=16)
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(10, 6))
+        self.agent_shortcut_entry = ctk.CTkComboBox(row, values=CHAT_SHORTCUT_CHOICES, height=36)
+        self.agent_shortcut_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.agent_shortcut_entry.set(self.config.get("agent_chat_hotkey", DEFAULT_CHAT_SHORTCUT))
+        ctk.CTkButton(row, text="Salvar atalho", width=120, height=36, command=self._save_agent_shortcut).pack(side="right")
+        self.agent_shortcut_status = tk.StringVar(master=self.root, value="")
+        ctk.CTkLabel(card, textvariable=self.agent_shortcut_status, wraplength=600,
+                     justify="left", font=app_font(size=10)).pack(anchor="w", padx=16, pady=(0, 12))
+
+    def _on_agent_chat_shortcut(self):
+        self._cancel_agent_hotkey_for_secure_attention()
+        self.events.put(("prefill_agent_chat", self.desktop.basic_focus()))
+
+    def _configure_agent_shortcut(self, value):
+        try:
+            spec = parse_chat_shortcut(value)
+        except ValueError as error:
+            self.agent_shortcut_status.set(str(error))
+            return False
+        current = self.chat_hotkey
+        if current and current.registered and current.spec.label == spec.label:
+            self.agent_shortcut_status.set(f"Ativo: {spec.label}")
+            return True
+        candidate = AgentChatHotkey(
+            on_press=self._on_agent_chat_shortcut,
+            on_status=lambda ok, message: self.events.put(("chat_hotkey_status", (candidate, ok, message))),
+            shortcut=spec.label,
+        )
+        candidate.start()
+        if not candidate.ready.wait(timeout=1.5) or not candidate.registered:
+            candidate.stop()
+            message = candidate.error or "O Windows não respondeu. Tente salvar o atalho novamente."
+            if current and current.registered:
+                message += f" {current.spec.label} continua ativo."
+            self.agent_shortcut_status.set(message)
+            return False
+        self.chat_hotkey = candidate
+        if current:
+            current.stop()
+        self.agent_shortcut_status.set(f"Ativo: {spec.label}")
+        return True
+
+    def _save_agent_shortcut(self):
+        value = self.agent_shortcut_entry.get()
+        if not self._configure_agent_shortcut(value):
+            return
+        value = self.chat_hotkey.spec.label
+        self.config.set("agent_chat_hotkey", value)
+        self.agent_shortcut_entry.set(value)
+        self._shown_agent_shortcut = value
+        self._sync_after_local_change("Atalho salvo.", success_message="Atalho salvo na nuvem.")
+
+    def _refresh_agent_shortcut(self):
+        if not hasattr(self, "agent_shortcut_entry"):
+            return
+        value = self.config.get("agent_chat_hotkey", DEFAULT_CHAT_SHORTCUT)
+        if value != getattr(self, "_shown_agent_shortcut", None):
+            self.agent_shortcut_entry.set(value)
+            self._shown_agent_shortcut = value
+        self._configure_agent_shortcut(value)
+
+    def _refresh_agent_identity(self):
+        identity = normalize_identity(self.config.get("user_identity", {}))
+        if not hasattr(self, "agent_identity_name") or identity == getattr(self, "_shown_agent_identity", None):
+            return
+        self.agent_identity_name.delete(0, tk.END)
+        self.agent_identity_name.insert(0, identity["display_name"])
+        self.agent_identity_aliases.delete(0, tk.END)
+        self.agent_identity_aliases.insert(0, ", ".join(identity["aliases"]))
+        self._shown_agent_identity = identity
+
+    def _save_agent_identity(self):
+        identity = normalize_identity({"display_name": self.agent_identity_name.get(),
+                                       "aliases": self.agent_identity_aliases.get().split(",")})
+        self.config.set("user_identity", identity)
+        self._shown_agent_identity = identity
+        self._sync_after_local_change("Identificação salva.", success_message="Nome e aliases salvos na nuvem.")
+
     def _build_rules_tab(self, tab):
         canvas = ctk.CTkScrollableFrame(
             tab,
@@ -1342,7 +1461,7 @@ class DitadoLocalApp:
             canvas,
             text=(
                 "Defina preferências que devem valer em toda ação do agente. "
-                "O resultado passa por uma revisão local para cumprir as regras ativas."
+                "Pedidos explícitos de idioma ou formato valem para a resposta atual."
             ),
             text_color="#9696A3",
             wraplength=650,
@@ -1479,6 +1598,13 @@ class DitadoLocalApp:
             border_color="#33333D",
         )
         self.skill_description_entry.pack(fill="x", padx=14, pady=(8, 0))
+
+        options = ctk.CTkFrame(form, fg_color="transparent")
+        options.pack(fill="x", padx=14, pady=(8, 0))
+        self.skill_kind_option = ctk.CTkOptionMenu(options, values=["Tarefa", "Estilo complementar"])
+        self.skill_kind_option.pack(side="left")
+        self.skill_output_option = ctk.CTkOptionMenu(options, values=list(SKILL_OUTPUT_MODES))
+        self.skill_output_option.pack(side="left", padx=8)
 
         ctk.CTkLabel(
             form,
@@ -1904,6 +2030,7 @@ class DitadoLocalApp:
             "mute_playback_while_recording",
             bool(self.mute_playback_while_recording.get()),
         )
+        self._sync_after_local_change("Preferências salvas.")
 
     def _transcription_language_changed(self, selected_label):
         language_id = TRANSCRIPTION_LANGUAGE_IDS_BY_LABEL.get(selected_label)
@@ -1914,9 +2041,10 @@ class DitadoLocalApp:
             )
         self.config.set("transcription_language", language_id)
         if language_id == "auto":
-            self.status.set("O idioma será detectado automaticamente.")
+            message = "O idioma será detectado automaticamente."
         else:
-            self.status.set(f"Idioma fixado: {selected_label}.")
+            message = f"Idioma fixado: {selected_label}."
+        self._sync_after_local_change(message)
 
     def _transcription_profile_changed(self, selected_label):
         current_profile_id = self.config.get("transcription_profile", "balanced")
@@ -1968,13 +2096,18 @@ class DitadoLocalApp:
         )
 
     def _sync_corrections_after_change(self, local_message):
+        return self._sync_after_local_change(
+            local_message, success_message="Correções salvas na nuvem.",
+        )
+
+    def _sync_after_local_change(self, local_message, *, success_message="Alterações salvas na nuvem."):
         cloud_status = self.cloud.status()
         if not (
             cloud_status.get("configured")
             and cloud_status.get("signed_in")
         ):
             self.status.set(
-                f"{local_message} Salva neste PC; conecte a nuvem para sincronizar."
+                f"{local_message} Dados salvos neste PC; conecte a nuvem para sincronizar."
             )
             return False
         if self.cloud_task_in_progress:
@@ -1986,7 +2119,7 @@ class DitadoLocalApp:
         def operation():
             sync_result = self.cloud.sync_once()
             return {
-                "message": "Correções salvas na nuvem.",
+                "message": success_message,
                 "profile_changed": bool(sync_result.get("remote_changed")),
                 "sync": sync_result,
             }
@@ -2055,7 +2188,7 @@ class DitadoLocalApp:
         was_editing = self.editing_rule_id is not None
         self._reset_rule_form()
         self._rebuild_rules()
-        self.status.set("Regra atualizada." if was_editing else "Regra criada e ativada.")
+        self._sync_after_local_change("Regra atualizada." if was_editing else "Regra criada e ativada.")
 
     def _reset_rule_form(self):
         self.editing_rule_id = None
@@ -2088,12 +2221,12 @@ class DitadoLocalApp:
         if self.editing_rule_id == rule_id:
             self._reset_rule_form()
         self._rebuild_rules()
-        self.status.set("Regra removida.")
+        self._sync_after_local_change("Regra removida.")
 
     def _toggle_rule(self, rule_id, enabled):
         self.config.set_rule_enabled(rule_id, bool(enabled))
         self.rules_status_text.set(self._rules_status())
-        self.status.set("Regra ativada." if enabled else "Regra pausada.")
+        self._sync_after_local_change("Regra ativada." if enabled else "Regra pausada.")
 
     def _rebuild_rules(self):
         for child in self.rules_frame.winfo_children():
@@ -2199,21 +2332,27 @@ class DitadoLocalApp:
             for item in self.skill_examples_text.get("1.0", "end-1c").splitlines()
             if item.strip()
         ]
-        skill_id = self.config.save_skill(
-            self.editing_skill_id,
-            self.skill_name_entry.get(),
-            self.skill_description_entry.get(),
-            triggers,
-            self.skill_instructions_text.get("1.0", "end-1c"),
-            examples,
-        )
+        try:
+            skill_id = self.config.save_skill(
+                self.editing_skill_id,
+                self.skill_name_entry.get(),
+                self.skill_description_entry.get(),
+                triggers,
+                self.skill_instructions_text.get("1.0", "end-1c"),
+                examples,
+                kind=("modifier" if self.skill_kind_option.get() == "Estilo complementar" else "primary") if hasattr(self, "skill_kind_option") else None,
+                output_mode=SKILL_OUTPUT_MODES.get(self.skill_output_option.get(), "auto") if hasattr(self, "skill_output_option") else None,
+            )
+        except ValueError as error:
+            self.status.set(str(error))
+            return
         if not skill_id:
             self.status.set("Preencha nome, quando usar e instruções da skill.")
             return
         was_editing = self.editing_skill_id is not None
         self._reset_skill_form()
         self._rebuild_skills()
-        self.status.set("Skill atualizada." if was_editing else "Skill criada e ativada.")
+        self._sync_after_local_change("Skill atualizada." if was_editing else "Skill criada e ativada.")
 
     def _reset_skill_form(self):
         self.editing_skill_id = None
@@ -2224,6 +2363,8 @@ class DitadoLocalApp:
         self.skill_instructions_text.delete("1.0", tk.END)
         self.skill_examples_text.delete("1.0", tk.END)
         self.cancel_skill_button.pack_forget()
+        self.skill_kind_option.set("Tarefa")
+        self.skill_output_option.set("Automático")
 
     def _edit_skill(self, skill_id):
         skill = next(
@@ -2244,6 +2385,8 @@ class DitadoLocalApp:
         self.skill_description_entry.insert(0, skill.get("description", ""))
         self.skill_instructions_text.insert("1.0", skill.get("instructions", ""))
         self.skill_examples_text.insert("1.0", "\n".join(skill.get("examples", [])))
+        self.skill_kind_option.set("Estilo complementar" if skill.get("kind") == "modifier" else "Tarefa")
+        self.skill_output_option.set(next((label for label, mode in SKILL_OUTPUT_MODES.items() if mode == skill.get("output_mode")), "Automático"))
         self.cancel_skill_button.pack(side="right", padx=(0, 8))
         self.status.set(f"Editando a skill {skill.get('name', '')}.")
 
@@ -2252,12 +2395,12 @@ class DitadoLocalApp:
         if self.editing_skill_id == skill_id:
             self._reset_skill_form()
         self._rebuild_skills()
-        self.status.set("Skill removida.")
+        self._sync_after_local_change("Skill removida.")
 
     def _toggle_skill(self, skill_id, enabled):
         self.config.set_skill_enabled(skill_id, bool(enabled))
         self.skills_status_text.set(self._skills_status())
-        self.status.set("Skill ativada." if enabled else "Skill pausada.")
+        self._sync_after_local_change("Skill ativada." if enabled else "Skill pausada.")
 
     def _rebuild_skills(self):
         for child in self.skills_frame.winfo_children():
@@ -2591,6 +2734,8 @@ class DitadoLocalApp:
         self._start_cloud_task(operation)
 
     def _refresh_after_cloud_profile_change(self):
+        self._refresh_agent_identity()
+        self._refresh_agent_shortcut()
         self.auto_paste.set(bool(self.config.get("auto_paste", True)))
         self.grammar_correction.set(bool(self.config.get("grammar_correction", True)))
         self.capture_clipboard_history.set(
@@ -2799,7 +2944,8 @@ class DitadoLocalApp:
             self._cancel_agent_hotkey_for_secure_attention()
             return
 
-        if key == pynput_keyboard.Key.space and ctrl_down:
+        shift_down = bool(self.keys_down & {pynput_keyboard.Key.shift, pynput_keyboard.Key.shift_l, pynput_keyboard.Key.shift_r})
+        if key == pynput_keyboard.Key.space and ctrl_down and not shift_down:
             if not self.dictation_chord_active:
                 session_id = self._next_hotkey_session()
                 self.agent_chord_active = False
@@ -2844,10 +2990,10 @@ class DitadoLocalApp:
             return
         if self.processing:
             return
-        if mode == "agent" and self.ollama_setup_in_progress:
+        if mode in {"agent", "agent_chat"} and self.ollama_setup_in_progress:
             self.status.set("A configuração do modo Agente ainda está em andamento.")
             return
-        if mode == "agent" and self.ollama_setup_action:
+        if mode in {"agent", "agent_chat"} and self.ollama_setup_action:
             message = self.ollama_setup_message or (
                 "O modo Agente precisa concluir a configuração do Ollama."
             )
@@ -2860,33 +3006,30 @@ class DitadoLocalApp:
             self.recording_mode = mode
             self.audio_chunks = []
             self.current_level = 0.0
+            self._begin_text_capture(mode)
             if bool(self.mute_playback_while_recording.get()):
                 self.playback_mute.mute_for_recording()
             device, self.stream = self._open_input_stream_with_recovery()
             self.input_sample_rate = device["sample_rate"]
-            self.agent_selection_cancelled.set()
-            self.agent_selected_text = ""
-            self.selection_ready = threading.Event()
-            self.agent_selection_cancelled = threading.Event()
             self.recording = True
 
-            if mode == "agent":
+            if mode == "agent_chat":
+                self.agent_selection_cancelled.set()
+                self.selection_ready.set()
+                self.status.set("Agente ouvindo... clique em Parar e enviar no chat.")
+                self.status_dot.configure(text_color="#E879F9")
+                self.ready_badge.configure(text="AGENTE", fg_color="#3C2045")
+            elif mode == "agent":
                 self.status.set("Modo agente: ouvindo sua instrução...")
                 self.status_dot.configure(text_color="#E879F9")
                 self.ready_badge.configure(text="AGENTE", fg_color="#3C2045")
                 self.overlay.show(
                     "agent_recording",
                     "Agente ouvindo...",
-                    "Selecione um texto e fale a instrução",
+                    "Capturando a seleção enquanto você fala",
                     "#E879F9",
                 )
-                threading.Thread(
-                    target=self._capture_selected_text,
-                    args=(self.agent_selection_cancelled, self.selection_ready),
-                    daemon=True,
-                ).start()
             else:
-                self.agent_selection_cancelled.set()
                 self.status.set("Ouvindo sua voz...")
                 self.status_dot.configure(text_color="#A78BFA")
                 self.ready_badge.configure(text="OUVINDO", fg_color="#2D2347")
@@ -2896,8 +3039,8 @@ class DitadoLocalApp:
                     "Solte Espaço para transcrever",
                     "#A78BFA",
                 )
-            self._restore_target_window()
         except Exception as error:
+            self.agent_selection_cancelled.set()
             self.recording = False
             stream = self.stream
             self.stream = None
@@ -2931,61 +3074,53 @@ class DitadoLocalApp:
         rms = float(np.sqrt(np.mean(np.square(channel)))) if channel.size else 0.0
         self.current_level = min(1.0, rms * 12.0)
 
-    def _capture_selected_text(self, cancellation, ready):
-        previous_clipboard = None
+    def _begin_text_capture(self, mode):
+        self.agent_selection_cancelled.set()
+        self.agent_selection_cancelled = threading.Event()
+        self.selection_ready = threading.Event()
+        self.agent_selected_text = ""
+        self.capture_error = ""
+        self.paste_target = None
+        if mode not in {"agent", "dictation"}:
+            self.selection_ready.set()
+            return
+        target = self.desktop.basic_focus()
+        callback = self._capture_selected_text if mode == "agent" else self._capture_paste_target
+        threading.Thread(target=callback, args=(self.agent_selection_cancelled, self.selection_ready, target), daemon=True).start()
+
+    def _capture_paste_target(self, cancellation, ready, target):
         try:
-            # Never synthesize C while the activation modifiers are held: on
-            # ABNT2, Ctrl+Alt+C types the cruzeiro sign instead of copying.
-            # Wait for both sides of Ctrl/Alt/Shift/Win to be released and
-            # stable, without blocking recording or changing physical keys.
-            modifier_keys = (0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C)
-            released_at = None
-            while not cancellation.is_set() and not self.closing:
-                if any(
-                    ctypes.windll.user32.GetAsyncKeyState(key) & 0x8000
-                    for key in modifier_keys
-                ):
-                    released_at = None
-                elif released_at is None:
-                    released_at = time.monotonic()
-                elif time.monotonic() - released_at >= 0.04:
-                    break
-                cancellation.wait(0.02)
+            snapshot = self.desktop.describe_focus(target)
+            if not cancellation.is_set():
+                self.paste_target = snapshot
+        finally:
+            ready.set()
+
+    def _capture_selected_text(self, cancellation, ready, target):
+        try:
+            copied, snapshot = self.desktop.selected_text(target, cancellation)
+            if not copied and not cancellation.is_set() and self.desktop.copy_native_selection(target):
+                copied = self._read_clipboard_text()
+                snapshot = self.desktop.describe_focus(target)
             if cancellation.is_set() or self.closing:
                 return
-            self._restore_target_window()
-            if cancellation.is_set():
-                return
-            previous_clipboard = self._read_clipboard_text()
-            sentinel = f"__DITADO_SELECTION_{uuid.uuid4()}__"
-            self.ignore_clipboard_until = time.monotonic() + 1.2
-            pyperclip.copy(sentinel)
-            self.keyboard_controller.press(pynput_keyboard.Key.ctrl_l)
-            try:
-                self.keyboard_controller.press("c")
-                self.keyboard_controller.release("c")
-            finally:
-                self.keyboard_controller.release(pynput_keyboard.Key.ctrl_l)
-            cancellation.wait(0.16)
-            copied = self._read_clipboard_text()
-            if cancellation.is_set():
-                pyperclip.copy(previous_clipboard)
-                self.last_clipboard_text = previous_clipboard
-                return
-            if copied and copied != sentinel:
+            self.paste_target = snapshot
+            if copied:
+                if len(copied) > 32000:
+                    raise ValueError("A seleção está longa demais. Use um trecho menor; nenhum texto foi cortado.")
+                self.ignore_clipboard_until = time.monotonic() + 1.2
+                pyperclip.copy(copied)
                 self.agent_selected_text = copied
                 self.history.add(copied, "selection")
                 self.last_clipboard_text = copied
                 self.history_dirty = True
+                self.events.put(("selection_captured", cancellation))
             else:
+                self.capture_error = "Não consegui ler uma seleção nesse aplicativo. Selecione o texto e tente novamente."
+        except Exception as error:
+            if not cancellation.is_set():
                 self.agent_selected_text = ""
-                pyperclip.copy(previous_clipboard)
-                self.last_clipboard_text = previous_clipboard
-        except Exception:
-            self.agent_selected_text = ""
-            if previous_clipboard is not None:
-                pyperclip.copy(previous_clipboard)
-                self.last_clipboard_text = previous_clipboard
+                self.capture_error = str(error) if isinstance(error, ValueError) else "Não foi possível capturar a seleção nesse aplicativo."
         finally:
             ready.set()
 
@@ -3237,13 +3372,17 @@ class DitadoLocalApp:
             if not spoken_text:
                 raise RuntimeError("Não detectei fala. Verifique o microfone e tente novamente.")
 
+            if mode == "agent_chat":
+                self.events.put(("agent_chat_voice", (self.voice_chat_target, spoken_text)))
+                return
+
             if mode == "agent":
                 if not self.selection_ready.wait(timeout=2.0):
                     self.agent_selection_cancelled.set()
                     raise RuntimeError("Solte as teclas do atalho e tente novamente.")
                 if not self.agent_selected_text:
                     raise RuntimeError(
-                        "Selecione um texto para iniciar uma conversa com o agente."
+                        self.capture_error or "Selecione um texto para iniciar uma conversa com o agente."
                     )
                 rules = self.config.get_rules(enabled_only=True)
                 skills = self.config.get_skills(enabled_only=True)
@@ -3275,6 +3414,7 @@ class DitadoLocalApp:
                         skills=skills,
                         selected_skill=selected_skill,
                         rules=rules,
+                        user_identity=self.config.get("user_identity", {}),
                     )
                 )
                 final_text = apply_custom_corrections(final_text, corrections)
@@ -3306,7 +3446,7 @@ class DitadoLocalApp:
                 (
                     "finish",
                     (
-                        final_text.strip(),
+                        final_text if mode == "agent" else final_text.strip(),
                         elapsed,
                         mode,
                         conversation,
@@ -3362,8 +3502,10 @@ class DitadoLocalApp:
             self.config.get("auto_paste", True)
         )
         if should_paste:
-            self._restore_target_window()
-            self.root.after(150, self._paste_into_active_app)
+            threading.Thread(target=self._deliver_result,
+                             args=(text, mode, self.paste_target), daemon=True).start()
+        else:
+            self.result_notification.show(mode)
         hide_delay = 12000 if has_chat_action else 1200
         self.root.after(hide_delay, self.overlay.hide)
 
@@ -3525,36 +3667,160 @@ class DitadoLocalApp:
         if self.agent_chat_window and self.agent_chat_window.is_open():
             self.agent_chat_window.close()
         self.agent_chat_entry_id = entry_id
-        self.agent_chat_window = AgentChatWindow(
+        self.agent_chat_profile_path = str(self.history.path)
+        chat = AgentChatWindow(
             self.root,
             conversation,
-            on_send=lambda instruction: self._send_agent_chat_follow_up(
-                entry_id,
-                conversation=self.agent_chat_window.conversation,
-                instruction=instruction,
-            ),
+            on_send=lambda instruction: self._send_from_agent_chat(chat, instruction),
             on_copy=self._copy_agent_chat_response,
+            on_voice=lambda: self._toggle_chat_recording(chat),
+            on_close=lambda: self._close_chat_recording(chat),
         )
+        self.agent_chat_window = chat
+
+    def _request_agent_chat_prefill(self, target=None):
+        if self.recording or self.processing:
+            self.status.set("Aguarde a gravação ou processamento atual para abrir o chat.")
+            return
+        current = self.agent_chat_window
+        if current and current.is_open() and current.loading:
+            current._focus_input()
+            self.status.set("Aguarde a resposta atual antes de inserir outra seleção.")
+            return
+        if getattr(self, "chat_prefill_request", None):
+            return
+        cancellation = threading.Event()
+        profile = str(self.history.path)
+        request = (cancellation, profile)
+        self.chat_prefill_request = request
+        target = target or self.desktop.basic_focus()
+
+        def capture():
+            text, error = "", ""
+            try:
+                text, _snapshot = self.desktop.selected_text(target, cancellation)
+                if not text and not cancellation.is_set() and self.desktop.copy_native_selection(target):
+                    text = self._read_clipboard_text()
+                if len(text) > 32000:
+                    raise ValueError("A seleção está longa demais. Selecione um trecho menor para editar no chat.")
+            except Exception as problem:
+                text = ""
+                error = str(problem) if isinstance(problem, ValueError) else "Não consegui ler a seleção. Você pode colar o texto no campo abaixo."
+            self.events.put(("agent_chat_prefill_ready", (request, text, error)))
+
+        threading.Thread(target=capture, daemon=True).start()
+        self.root.after(2500, lambda: self._expire_agent_chat_prefill(request))
+
+    def _expire_agent_chat_prefill(self, request):
+        if getattr(self, "chat_prefill_request", None) is request:
+            request[0].set()
+            self._finish_agent_chat_prefill((request, "", "A seleção demorou para responder. Cole o texto aqui para continuar."))
+
+    def _finish_agent_chat_prefill(self, payload):
+        request, text, error = payload
+        if getattr(self, "chat_prefill_request", None) is not request:
+            return
+        self.chat_prefill_request = None
+        if self.closing or request[1] != str(self.history.path):
+            return
+        if self.recording or self.processing or (self.agent_chat_window and self.agent_chat_window.is_open() and self.agent_chat_window.loading):
+            self.status.set("Aguarde a operação atual e use o atalho novamente para inserir a seleção.")
+            return
+        self._open_new_agent_chat(initial_text=text)
+        if error and self.agent_chat_window and self.agent_chat_window.is_open():
+            self.agent_chat_window.show_error(error)
+
+    def _open_new_agent_chat(self, initial_text=""):
+        if self.recording or self.processing:
+            self.status.set("Aguarde a gravação ou processamento atual para abrir uma nova conversa.")
+            return
+        current = self.agent_chat_window
+        if current and current.is_open():
+            # Repeated shortcut focuses a draft or busy window without discarding it.
+            if self.agent_chat_profile_path == str(self.history.path) and (current.loading or current.conversation is None or current.input.get("1.0", "end-1c").strip()):
+                if initial_text:
+                    current.prefill(initial_text)
+                current._focus_input()
+                return
+            current.close()
+        self.agent_chat_entry_id = "draft:" + str(uuid.uuid4())
+        self.agent_chat_profile_path = str(self.history.path)
+        chat = AgentChatWindow(
+            self.root, None,
+            on_send=lambda instruction: self._send_from_agent_chat(chat, instruction),
+            on_copy=self._copy_agent_chat_response,
+            on_voice=lambda: self._toggle_chat_recording(chat),
+            on_close=lambda: self._close_chat_recording(chat),
+        )
+        self.agent_chat_window = chat
+        if initial_text:
+            chat.prefill(initial_text)
+
+    def _send_from_agent_chat(self, chat, instruction):
+        if self.agent_chat_window is not chat or not chat.is_open():
+            return
+        if self.agent_chat_profile_path != str(self.history.path):
+            chat.show_error("A conta mudou. Abra uma nova conversa para continuar.")
+            return
+        self._send_agent_chat_follow_up(self.agent_chat_entry_id, chat.conversation, instruction)
+
+    def _toggle_chat_recording(self, chat):
+        if self.agent_chat_window is not chat or not chat.is_open() or chat.loading:
+            return
+        if self.agent_chat_profile_path != str(self.history.path):
+            chat.show_error("A conta mudou. Abra uma nova conversa para continuar.")
+            return
+        if self.recording:
+            if self.recording_mode == "agent_chat":
+                chat.set_recording(False)
+                self.stop_recording()
+                if self.processing:
+                    chat.set_loading(True)
+            return
+        if self.processing:
+            chat.show_error("Aguarde o processamento atual antes de falar.")
+            return
+        self.voice_chat_target = (self.agent_chat_entry_id, str(self.history.path))
+        self.start_recording("agent_chat")
+        chat.set_recording(self.recording and self.recording_mode == "agent_chat")
+
+    def _close_chat_recording(self, chat):
+        if self.agent_chat_window is chat and self.recording and self.recording_mode == "agent_chat":
+            self._cancel_recording()
+
+    def _finish_chat_voice(self, payload):
+        target, text = payload
+        self.processing = False
+        self.overlay.hide()
+        chat = self.agent_chat_window
+        if (target != (self.agent_chat_entry_id, str(self.history.path))
+                or not chat or not chat.is_open()):
+            return
+        chat.set_loading(False)
+        chat.submit_voice(text)
 
     def _open_latest_agent_chat(self):
         entry = self.history.latest_agent_conversation()
         if not can_continue_agent_conversation(entry):
-            self._show_error(
-                "Ainda não existe uma conversa do agente para continuar."
-            )
+            self._open_new_agent_chat()
             return
         self._open_agent_chat(entry)
 
     def _send_agent_chat_follow_up(self, entry_id, conversation, instruction):
+        profile_path = str(self.history.path)
+        options = dict(skills=self.config.get_skills(enabled_only=True),
+                       rules=self.config.get_rules(enabled_only=True),
+                       user_identity=self.config.get("user_identity", {}))
+        corrections = self.config.get("corrections", [])
         def run_follow_up():
             try:
-                result, updated = self.ollama.continue_selected_text_conversation(
-                    conversation,
-                    instruction,
-                )
+                if conversation is None:
+                    result, updated = self.ollama.start_free_conversation(instruction, **options)
+                else:
+                    result, updated = self.ollama.continue_selected_text_conversation(conversation, instruction, **options)
                 result = apply_custom_corrections(
                     result,
-                    self.config.get("corrections", []),
+                    corrections,
                 )
                 updated = dict(updated)
                 updated["messages"] = [
@@ -3569,7 +3835,7 @@ class DitadoLocalApp:
                 self.events.put(
                     (
                         "agent_chat_reply",
-                        (entry_id, result, updated),
+                        (entry_id, result, updated, profile_path),
                     )
                 )
             except (OllamaUnavailableError, OllamaModelMissingError) as error:
@@ -3596,8 +3862,15 @@ class DitadoLocalApp:
         threading.Thread(target=run_follow_up, daemon=True).start()
 
     def _finish_agent_chat_reply(self, payload):
-        entry_id, result, conversation = payload
-        if not self.history.update_conversation(
+        entry_id, result, conversation, *profile = payload
+        if profile and profile[0] != str(self.history.path):
+            return
+        if entry_id.startswith("draft:") and conversation.get("kind") == "free":
+            saved_id = self.history.add(result, "agent", conversation=conversation)
+            if self.agent_chat_entry_id == entry_id:
+                self.agent_chat_entry_id = saved_id
+            entry_id = saved_id
+        elif not self.history.update_conversation(
             entry_id,
             result,
             conversation,
@@ -3670,20 +3943,39 @@ class DitadoLocalApp:
             except Exception:
                 pass
 
+    def _deliver_result(self, text, mode, target):
+        pasted = False
+        try:
+            if (self._read_clipboard_text() == text and not self.desktop.modifiers_down()
+                    and self.desktop.can_paste(target) and self.desktop.same_window(target)
+                    and self._read_clipboard_text() == text):
+                pasted = self._paste_into_active_app()
+        except Exception:
+            pass
+        if not pasted:
+            self.events.put(("clipboard_result_ready", (mode, text)))
+
     def _paste_into_active_app(self):
         try:
-            self._restore_target_window()
             self.keyboard_controller.press(pynput_keyboard.Key.ctrl)
-            self.keyboard_controller.press("v")
-            self.keyboard_controller.release("v")
-            self.keyboard_controller.release(pynput_keyboard.Key.ctrl)
-        except Exception as error:
-            self._show_error(f"O resultado foi copiado, mas não consegui colar: {error}")
+            try:
+                self.keyboard_controller.press("v")
+                self.keyboard_controller.release("v")
+            finally:
+                self.keyboard_controller.release(pynput_keyboard.Key.ctrl)
+            return True
+        except Exception:
+            return False
 
     def _show_error(self, message):
         self.agent_selection_cancelled.set()
         self.recording = False
         self.processing = False
+        if getattr(self, "recording_mode", None) == "agent_chat":
+            chat = getattr(self, "agent_chat_window", None)
+            if chat and chat.is_open():
+                chat.set_recording(False)
+                chat.show_error(message)
         self.status.set(message)
         self.status_dot.configure(text_color="#FB7185")
         self.ready_badge.configure(text="ATENÇÃO", fg_color="#47202A")
@@ -3753,6 +4045,25 @@ class DitadoLocalApp:
                 title, subtitle, color = payload
                 self.status.set(title)
                 self.overlay.show("processing", title, subtitle, color)
+            elif event == "chat_hotkey_status":
+                source, ok, message = payload
+                if source is not self.chat_hotkey:
+                    continue
+                self.chat_hotkey_error = "" if ok else message
+                self.agent_shortcut_status.set(message)
+                if not ok:
+                    self.overlay.show("error", "Atalho do Agente indisponível", message, "#FB7185")
+                    self.root.after(8000, self.overlay.hide)
+            elif event == "prefill_agent_chat":
+                self._request_agent_chat_prefill(target=payload)
+            elif event == "agent_chat_prefill_ready":
+                self._finish_agent_chat_prefill(payload)
+            elif event == "selection_captured":
+                if payload is self.agent_selection_cancelled and self.recording and self.recording_mode == "agent":
+                    self.overlay.show("agent_recording", "Seleção capturada", "Pode mudar de janela e continuar falando", "#E879F9")
+            elif event == "clipboard_result_ready":
+                mode, text = payload
+                self.result_notification.show(mode, self._read_clipboard_text() == text)
             elif event == "model_ready":
                 self.backend_text.set(self.model_backend)
                 self.status.set("Transcrição pronta. Verificando o modo Agente...")
@@ -3780,6 +4091,8 @@ class DitadoLocalApp:
                 self._finish_result(payload)
             elif event == "agent_chat_reply":
                 self._finish_agent_chat_reply(payload)
+            elif event == "agent_chat_voice":
+                self._finish_chat_voice(payload)
             elif event == "agent_chat_error":
                 self._show_agent_chat_error(payload)
             elif event == "cloud_result":
@@ -3794,6 +4107,8 @@ class DitadoLocalApp:
                 self._show_main_window()
             elif event == "open_agent_chat":
                 self._open_latest_agent_chat()
+            elif event == "new_agent_chat":
+                self._open_new_agent_chat()
             elif event == "copy_latest":
                 self._copy_latest_transcription()
             elif event == "exit":
@@ -3809,6 +4124,10 @@ class DitadoLocalApp:
             pystray.MenuItem(
                 "Abrir Ditado local",
                 lambda _icon, _item: self.events.put(("show_window", None)),
+            ),
+            pystray.MenuItem(
+                "Nova conversa com o agente",
+                lambda _icon, _item: self.events.put(("new_agent_chat", None)),
             ),
             pystray.MenuItem(
                 "Conversar com o agente",
@@ -3844,6 +4163,8 @@ class DitadoLocalApp:
 
     def _exit_app(self):
         self.closing = True
+        if self.chat_hotkey:
+            self.chat_hotkey.stop()
         self.agent_selection_cancelled.set()
         if self.stream is not None:
             try:

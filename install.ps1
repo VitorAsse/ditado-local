@@ -77,8 +77,12 @@ if ($LASTEXITCODE -ne 0) {
 
 $applicationFiles = @(
     "ditado_ai.py",
+    "ditado_harness.py",
     "ditado_audio.py",
     "ditado_chat.py",
+    "ditado_desktop.py",
+    "ditado_notification.py",
+    "ditado_hotkey.py",
     "ditado_cloud.py",
     "ditado_local.pyw",
     "ditado_ollama.py",

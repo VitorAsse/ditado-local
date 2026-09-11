@@ -5,19 +5,22 @@ from ditado_theme import APP_COLORS, app_font
 
 
 class AgentChatWindow:
-    def __init__(self, root, conversation, on_send, on_copy):
+    def __init__(self, root, conversation, on_send, on_copy, on_voice=None, on_close=None):
         normalized = normalize_agent_conversation(conversation)
-        if normalized is None:
+        if conversation is not None and normalized is None:
             raise ValueError("Esta conversa não tem contexto válido para continuar.")
 
         self.conversation = normalized
         self.on_send = on_send
         self.on_copy = on_copy
+        self.on_voice = on_voice
+        self.on_close = on_close
+        self.recording = False
         self.loading = False
         self.closed = False
 
         self.window = ctk.CTkToplevel(root)
-        self.window.title("Continuar com o agente")
+        self.window.title("Agente local")
         self.window.geometry("620x650")
         self.window.minsize(480, 540)
         self.window.configure(fg_color=APP_COLORS["background"])
@@ -50,13 +53,13 @@ class AgentChatWindow:
         title_group.pack(side="left", fill="x", expand=True, pady=12)
         ctk.CTkLabel(
             title_group,
-            text="Continuar com o agente",
+            text="Agente local",
             text_color=APP_COLORS["text_strong"],
             font=app_font(18, "bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
             title_group,
-            text="Peça ajustes usando o texto e as respostas desta conversa.",
+            text="Converse por voz ou texto, sem precisar selecionar nada.",
             text_color=APP_COLORS["text_muted"],
             font=app_font(11),
         ).pack(anchor="w", pady=(2, 0))
@@ -118,7 +121,7 @@ class AgentChatWindow:
         self.copy_button.pack(side="right", padx=(8, 0))
         self.send_button = ctk.CTkButton(
             action_row,
-            text="Enviar ajuste",
+            text="Enviar",
             width=112,
             height=34,
             corner_radius=10,
@@ -129,6 +132,12 @@ class AgentChatWindow:
             command=self.submit,
         )
         self.send_button.pack(side="right")
+        self.voice_button = ctk.CTkButton(
+            composer, text="Falar", height=32, width=100,
+            command=self._toggle_voice,
+        )
+        if self.on_voice:
+            self.voice_button.pack(anchor="w", padx=12, pady=(0, 12))
 
         self._render_messages()
         self.window.after(100, self._focus_input)
@@ -138,10 +147,24 @@ class AgentChatWindow:
             self.window.lift()
             self.input.focus_set()
 
+    def prefill(self, text):
+        """Insert an editable draft; never submit or replace an existing draft."""
+        if not text or self.loading or self.recording or not self.is_open():
+            return
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        existing = self.input.get("1.0", "end-1c")
+        self.input.insert("end", ("\n\n" if existing else "") + text)
+        self.input.mark_set("insert", "end-1c")
+        self.input.see("end")
+        self.status_label.configure(text="Edite · Ctrl + Enter para enviar")
+
     def _render_messages(self):
         for child in self.messages_frame.winfo_children():
             child.destroy()
-        for message in self.conversation["messages"]:
+        if self.conversation is None:
+            ctk.CTkLabel(self.messages_frame, text="Como posso ajudar?\nDigite abaixo ou clique em Falar.",
+                         text_color=APP_COLORS["text_muted"], font=app_font(13)).pack(padx=16, pady=28)
+        for message in (self.conversation or {}).get("messages", []):
             is_user = message["role"] == "user"
             row = ctk.CTkFrame(self.messages_frame, fg_color="transparent")
             row.pack(fill="x", padx=10, pady=5)
@@ -197,12 +220,12 @@ class AgentChatWindow:
         return "break"
 
     def submit(self):
-        if self.loading or not self.is_open():
+        if self.loading or self.recording or not self.is_open():
             return
         instruction = self.input.get("1.0", "end").strip()
         if not instruction:
             self.status_label.configure(
-                text="Digite o ajuste antes de enviar.",
+                text="Digite uma mensagem antes de enviar.",
                 text_color=APP_COLORS["danger"],
             )
             return
@@ -213,14 +236,16 @@ class AgentChatWindow:
         self.loading = bool(loading)
         self.send_button.configure(
             state="disabled" if self.loading else "normal",
-            text="Agente respondendo..." if self.loading else "Enviar ajuste",
+            text="Agente respondendo..." if self.loading else "Enviar",
         )
         self.copy_button.configure(
             state="disabled" if self.loading else "normal"
         )
+        self.input.configure(state="disabled" if self.loading else "normal")
+        self.voice_button.configure(state="disabled" if self.loading else "normal")
         self.status_label.configure(
             text=(
-                "Mantendo a conversa e aplicando seu ajuste..."
+                "O agente está preparando a resposta..."
                 if self.loading
                 else "Ctrl + Enter para enviar"
             ),
@@ -232,8 +257,8 @@ class AgentChatWindow:
         if normalized is None or not self.is_open():
             return
         self.conversation = normalized
-        self.input.delete("1.0", "end")
         self.set_loading(False)
+        self.input.delete("1.0", "end")
         self.status_label.configure(
             text="Resposta pronta. Copie quando estiver satisfeito.",
             text_color=APP_COLORS["success"],
@@ -250,7 +275,7 @@ class AgentChatWindow:
         )
 
     def _copy_latest(self):
-        if not self.conversation["messages"]:
+        if not self.conversation or not self.conversation["messages"]:
             return
         latest = self.conversation["messages"][-1]
         if latest["role"] != "assistant":
@@ -273,7 +298,26 @@ class AgentChatWindow:
         if self.closed:
             return
         self.closed = True
+        if self.on_close:
+            self.on_close()
         try:
             self.window.destroy()
         except Exception:
             pass
+
+    def _toggle_voice(self):
+        if self.on_voice and not self.loading:
+            self.on_voice()
+
+    def set_recording(self, recording):
+        self.recording = bool(recording)
+        self.voice_button.configure(text="Parar e enviar" if self.recording else "Falar")
+        self.send_button.configure(state="disabled" if self.recording else "normal")
+        self.status_label.configure(text="Ouvindo... clique em Parar e enviar." if self.recording else "Ctrl + Enter para enviar")
+
+    def submit_voice(self, text):
+        self.set_recording(False)
+        existing = self.input.get("1.0", "end-1c").strip()
+        self.input.delete("1.0", "end")
+        self.input.insert("1.0", (existing + "\n" if existing else "") + text)
+        self.submit()

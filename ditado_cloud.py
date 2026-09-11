@@ -585,7 +585,15 @@ class CloudSyncManager:
     def _accept_session(self, payload, email):
         previous_config = copy.deepcopy(self.app_config.data)
         previous_history = self.history.all()
+        previous_session = self.state.active_session()
         user_id = self.state.put_session(payload, email=email, make_active=True)
+        if previous_session and previous_session["user_id"] != user_id:
+            previous_config = {
+                key: previous_config[key]
+                for key in self.app_config.DEVICE_LOCAL_PREFERENCE_KEYS
+                if key in previous_config
+            }
+            previous_history = []
         self._activate_profile(user_id, previous_config, previous_history)
         return {
             "confirmation_required": False,
@@ -608,10 +616,13 @@ class CloudSyncManager:
         return self.state.active_session()
 
     def switch_account(self, user_id):
-        previous_config = copy.deepcopy(self.app_config.data)
-        previous_history = self.history.all()
+        previous_config = {
+            key: copy.deepcopy(self.app_config.data[key])
+            for key in self.app_config.DEVICE_LOCAL_PREFERENCE_KEYS
+            if key in self.app_config.data
+        }
         self.state.set_active_user(user_id)
-        self._activate_profile(user_id, previous_config, previous_history)
+        self._activate_profile(user_id, previous_config, [])
         return self.state.active_session()
 
     def sign_out(self, forget=False):
@@ -744,6 +755,10 @@ class CloudSyncManager:
             if key in current_keys or prior.get("hash") == "__deleted__":
                 continue
             item_type, item_id = key.split(":", 1)
+            if item_type == "preference" and item_id not in self.app_config.SYNCED_PREFERENCE_KEYS:
+                # A newer app may have introduced preferences this version cannot use.
+                outbox.pop(key, None)
+                continue
             deleted_at = utc_now()
             outbox[key] = {
                 "item_type": item_type,
@@ -769,6 +784,15 @@ class CloudSyncManager:
         return str(remote.get("device_id", "")) > str(local_device_id or "")
 
     def _merge_remote(
+        self, user_id, master_key, rows, bucket, *, prefer_remote=False,
+    ):
+        # Keep user edits atomic with the read/merge/write, without locking during HTTP.
+        with self.app_config.lock, self.history.lock:
+            return self._merge_remote_locked(
+                user_id, master_key, rows, bucket, prefer_remote=prefer_remote,
+            )
+
+    def _merge_remote_locked(
         self,
         user_id,
         master_key,
@@ -784,6 +808,8 @@ class CloudSyncManager:
             item_type = row.get("item_type")
             item_id = row.get("item_id")
             if item_type not in SYNC_ITEM_TYPES or not isinstance(item_id, str):
+                continue
+            if item_type == "preference" and item_id not in self.app_config.SYNCED_PREFERENCE_KEYS:
                 continue
             key_tuple = (item_type, item_id)
             manifest_key = self._manifest_key(item_type, item_id)
@@ -859,18 +885,25 @@ class CloudSyncManager:
         return changed
 
     def _remote_items(self, client, session):
-        return client.select(
-            "ditado_sync_items",
-            session["access_token"],
-            params={
-                "select": (
-                    "user_id,item_type,item_id,ciphertext,updated_at,"
-                    "deleted_at,device_id"
-                ),
-                "user_id": f"eq.{session['user_id']}",
-                "order": "updated_at.asc",
-            },
-        )
+        rows = []
+        while True:
+            page = client.select(
+                "ditado_sync_items",
+                session["access_token"],
+                params={
+                    "select": (
+                        "user_id,item_type,item_id,ciphertext,updated_at,"
+                        "deleted_at,device_id"
+                    ),
+                    "user_id": f"eq.{session['user_id']}",
+                    "order": "item_type.asc,item_id.asc",
+                    "offset": str(len(rows)),
+                    "limit": "500",
+                },
+            )
+            if not page:
+                return rows
+            rows.extend(page)
 
     def _push_outbox(self, client, session, master_key, bucket):
         outbox = bucket.setdefault("outbox", {})
@@ -944,17 +977,21 @@ class CloudSyncManager:
     def sync_once(self, recovery_code=None):
         if not self.sync_lock.acquire(blocking=False):
             raise CloudError("Uma sincronização já está em andamento.")
+        bucket = None
+        session = None
         try:
             session = self._valid_session()
             master_key, new_recovery_code = self.ensure_master_key(recovery_code)
             bucket = self.state.sync_bucket(session["user_id"])
             first_sync = not bucket.get("manifest") and not bucket.get("last_sync")
             self._observe_local(session["user_id"], bucket)
+            # Persist pending edits/deletions before a request can fail or the app exits.
+            self.state.set_sync_bucket(session["user_id"], bucket)
             client = self._client()
             try:
                 self._register_device(client, session)
                 remote_before = self._remote_items(client, session)
-                self._merge_remote(
+                changed_before = self._merge_remote(
                     session["user_id"],
                     master_key,
                     remote_before,
@@ -962,9 +999,10 @@ class CloudSyncManager:
                     prefer_remote=first_sync,
                 )
                 self._observe_local(session["user_id"], bucket)
+                self.state.set_sync_bucket(session["user_id"], bucket)
                 pushed = self._push_outbox(client, session, master_key, bucket)
                 remote_after = self._remote_items(client, session)
-                changed = self._merge_remote(
+                changed_after = self._merge_remote(
                     session["user_id"],
                     master_key,
                     remote_after,
@@ -977,7 +1015,7 @@ class CloudSyncManager:
             self.last_error = ""
             return {
                 "pushed": pushed,
-                "remote_changed": changed,
+                "remote_changed": changed_before or changed_after,
                 "last_sync": bucket["last_sync"],
                 "recovery_code": new_recovery_code,
             }
@@ -985,7 +1023,11 @@ class CloudSyncManager:
             self.last_error = str(error)
             raise
         finally:
-            self.sync_lock.release()
+            try:
+                if bucket is not None and session is not None:
+                    self.state.set_sync_bucket(session["user_id"], bucket)
+            finally:
+                self.sync_lock.release()
 
     def list_devices(self):
         session = self._valid_session()

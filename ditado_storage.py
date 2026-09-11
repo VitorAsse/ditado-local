@@ -118,14 +118,24 @@ class AppConfig:
         "skills": [],
         "history_limit": 150,
         "startup_enabled": True,
+        "user_identity": {"display_name": "", "aliases": []},
+        "agent_chat_hotkey": "Ctrl + Windows",
     }
 
     SYNCED_PREFERENCE_KEYS = {
         "auto_paste",
         "grammar_correction",
         "capture_clipboard_history",
+        "mute_playback_while_recording",
         "transcription_language",
         "history_limit",
+        "user_identity",
+        "agent_chat_hotkey",
+    }
+
+    # These choices describe this PC, rather than the user's writing preferences.
+    DEVICE_LOCAL_PREFERENCE_KEYS = {
+        "microphone_name", "startup_enabled", "transcription_profile",
     }
 
     def __init__(self, path=None):
@@ -212,6 +222,8 @@ class AppConfig:
 
     def set(self, key, value):
         with self.lock:
+            if self.data.get(key) == value:
+                return
             self.data[key] = value
             if key in self.SYNCED_PREFERENCE_KEYS:
                 timestamps = self.data.setdefault(
@@ -339,6 +351,8 @@ class AppConfig:
         triggers,
         instructions,
         examples,
+        kind=None,
+        output_mode=None,
     ):
         normalized_name = name.strip()
         normalized_description = description.strip()
@@ -349,14 +363,20 @@ class AppConfig:
                 for trigger in triggers
                 if isinstance(trigger, str) and trigger.strip()
             )
-        )[:12]
+        )
         normalized_examples = [
             example.strip()
             for example in examples
             if isinstance(example, str) and example.strip()
-        ][:8]
+        ]
         if not normalized_name or not normalized_description or not normalized_instructions:
             return None
+        for label, value, limit in [("Nome", normalized_name, 80), ("Descrição", normalized_description, 500),
+                                    ("Instruções", normalized_instructions, 4000)]:
+            if len(value) > limit:
+                raise ValueError(f"{label}: limite de {limit} caracteres. Nenhum conteúdo foi cortado.")
+        if len(normalized_triggers) > 12 or len(normalized_examples) > 8:
+            raise ValueError("Use até 12 ativações e 8 exemplos por skill. Nenhum conteúdo foi cortado.")
 
         with self.lock:
             existing = next(
@@ -368,16 +388,24 @@ class AppConfig:
                 None,
             )
             resolved_id = skill_id or str(uuid.uuid4())
+            if not existing and len(self.data.get("skills", [])) >= 30:
+                raise ValueError("O perfil já tem 30 skills. Edite uma existente; nenhuma skill foi removida.")
             skill = {
                 "id": resolved_id,
-                "name": normalized_name[:80],
-                "description": normalized_description[:500],
+                "name": normalized_name,
+                "description": normalized_description,
                 "triggers": normalized_triggers,
-                "instructions": normalized_instructions[:4000],
+                "instructions": normalized_instructions,
                 "examples": normalized_examples,
                 "enabled": bool(existing.get("enabled", True)) if existing else True,
                 "updated_at": self._now(),
+                "kind": kind or (existing or {}).get("kind", "primary"),
+                "output_mode": output_mode or (existing or {}).get("output_mode", "auto"),
             }
+            if skill["kind"] not in {"primary", "modifier"}:
+                return None
+            if skill["output_mode"] not in {"auto", "chat_message", "plain_prose", "single_line", "list", "code", "json", "preserve_structure"}:
+                return None
             skills = [
                 item
                 for item in self.data.get("skills", [])
@@ -513,8 +541,8 @@ class HistoryStore:
     def add(self, text, source, conversation=None):
         if not isinstance(text, str):
             return None
-        normalized = text.strip()
-        if not normalized:
+        normalized = text if source == "agent" else text.strip()
+        if not normalized.strip():
             return None
         with self.lock:
             if self.entries and self.entries[0].get("text") == normalized:
@@ -565,7 +593,7 @@ class HistoryStore:
             )
             if entry is None or entry.get("source") != "agent":
                 return False
-            entry["text"] = text.strip()
+            entry["text"] = text
             entry["conversation"] = json.loads(
                 json.dumps(conversation, ensure_ascii=False)
             )

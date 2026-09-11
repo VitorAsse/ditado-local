@@ -70,30 +70,80 @@ O instalador cria um ambiente Python isolado em
 1. Coloque o cursor no campo em que deseja escrever.
 2. Segure `Ctrl + Espaço`.
 3. Fale e solte `Espaço`.
-4. O texto é copiado e, quando habilitado, colado no aplicativo em foco.
+4. O texto é copiado e, quando habilitado, colado se o campo original ainda estiver ativo e permitir edição.
+
+Se você mudar de janela ou não houver um campo compatível para colar, uma pequena
+notificação aparece no canto inferior direito: o resultado está na área de
+transferência e pode ser colado com `Ctrl + V`. O aviso não tira o foco, desaparece
+após oito segundos e também funciona para resultados do agente.
 
 ### Agente local
+
+**Para abrir o chat:** pressione `Ctrl + Windows`. Se houver texto selecionado,
+ele aparece no campo de mensagem, preservando as quebras de linha, **sem enviar**.
+Você pode editar, acrescentar instruções e só depois clicar em `Enviar` ou usar
+`Ctrl + Enter`. Sem seleção, o campo abre vazio. Se já houver um rascunho no chat,
+a seleção é acrescentada ao final, preservando o que você escreveu.
+
+Na aba **Agente > Atalho para abrir o Agente**, escolha ou digite outra combinação
+e clique em **Salvar atalho**. A mudança vale imediatamente e acompanha sua conta
+na nuvem. `Ctrl + Windows` aceita as teclas de ambos os lados, em qualquer ordem.
+Você também pode escolher `F8` ou combinações como `Ctrl + Shift + Enter`.
+Se a combinação estiver ocupada, o app avisa e mantém o atalho anterior ativo.
+O menu da bandeja também tem `Nova conversa com o agente`. `Ctrl + Espaço`
+continua sendo o atalho de ditado, e `Ctrl + Alt` continua sendo o agente por voz.
+
+Você também pode clicar em `Falar`, falar seu pedido e clicar em `Parar e enviar`.
+Você pode continuar por voz ou texto.
+Fechar a janela durante a gravação desliga o microfone. As respostas ficam no chat,
+sem colar em outro aplicativo, e a conversa é salva no histórico e sincronizada
+quando a conta está conectada.
+
+**Para agir sobre uma seleção:**
 
 1. Selecione um texto.
 2. Segure apenas `Ctrl esquerdo + Alt esquerdo`.
 3. Diga algo como `deixe mais curto` ou `transforme em uma lista`.
 4. Solte uma das teclas.
 5. Quando a primeira resposta ficar pronta, clique em `Continuar no chat` no overlay.
-6. Digite os próximos ajustes no mini chat e use `Ctrl + Enter` ou `Enviar ajuste`.
+6. Digite os próximos ajustes no mini chat e use `Ctrl + Enter` ou `Enviar`, ou clique em `Falar`.
 7. Clique em `Copiar resposta` quando estiver satisfeito.
 
-O atalho por voz sempre começa uma conversa a partir de um texto selecionado. A
-continuação acontece por texto no mini chat. Se o overlay já tiver desaparecido, use
+A captura da seleção começa ao acionar o atalho, sem esperar soltar Ctrl ou Alt.
+Quando aparecer **Seleção capturada**, você pode desfazer a seleção, usar o mouse
+ou mudar de janela: o agente continua trabalhando com a cópia inicial. O aplicativo
+usa a seleção exposta pela acessibilidade do Windows e, em campos de texto nativos,
+a cópia nativa. Se o aplicativo de origem não disponibilizar a seleção, ele avisa
+sem usar um texto antigo da área de transferência. A colagem não reabre nem
+traz a janela anterior para frente.
+
+O atalho `Ctrl + Alt` começa a partir de um texto selecionado; o atalho do chat
+abre o chat para editar a seleção ou começar sem texto. Se o overlay já tiver desaparecido, use
 `Histórico` > `Continuar` ou a opção `Conversar com o agente` na bandeja. O mini chat
 não cola automaticamente uma nova versão em outro aplicativo.
+
+Ao redigir mensagens a partir de conversas, o agente recebe orientações para
+preservar o motivo do contato, encaminhamentos relevantes e a perspectiva de quem
+envia, com tom natural de comunicação interna. Contexto e pedido devem ficar em
+parágrafos curtos separados por uma linha em branco. Pedidos explícitos de outro
+formato continuam valendo. Na aba Agente, informe seu nome e aliases para reconhecer
+suas falas; a identificação é opcional e acompanha sua conta na nuvem.
+O harness separa pedido, fonte, identidade, destinatário, idioma e formato.
+Mensagens novas com vários participantes e identidade conhecida recebem uma preparação
+local de contexto antes da redação. Outras tarefas usam uma geração. Verificações
+objetivas podem solicitar um único reparo; quebras de parágrafo usam formatação que
+preserva as palavras. Não há revisão geral automática de cada resultado.
+Pedidos e históricos longos demais são recusados antes da geração, sem cortes silenciosos.
+A qualidade semântica depende do modelo local: essas verificações não garantem autoria,
+atribuição ou fidelidade em todos os casos. Veja [o contrato do harness](docs/AGENT_HARNESS.md).
 
 Para abrir somente o mini chat sem mostrar a janela principal, clique com o botão
 direito no ícone do Ditado Local na bandeja e escolha `Conversar com o agente`.
 
 ### Regras permanentes
 
-Regras são preferências sempre ativas. Cada resultado passa por uma segunda revisão
-local quando existe pelo menos uma regra habilitada.
+Regras são preferências sempre ativas, aplicadas na geração. Um pedido explícito de
+idioma ou formato prevalece temporariamente sem alterar as preferências salvas.
 
 Exemplos:
 
@@ -101,7 +151,8 @@ Exemplos:
 - `Não altere números, URLs ou nomes próprios.`
 - `Mantenha um tom direto e evite linguagem promocional.`
 
-As regras ficam somente no `config.json` do usuário e não fazem parte do código.
+As regras ficam no perfil do usuário, são sincronizadas quando há conta conectada
+e não fazem parte do código.
 Use regras apenas para preferências que devem valer em todas as conversas.
 
 ### Skills
@@ -109,6 +160,11 @@ Use regras apenas para preferências que devem valer em todas as conversas.
 Skills são comportamentos ativados por nome ou frase. Use quando uma regra não deve
 ser aplicada o tempo todo, como formatação de resumo semanal ou resposta profissional.
 Sem um gatilho correspondente, nenhuma skill é adicionada ao agente generalista.
+Uma skill de tarefa pode combinar com uma de estilo. Quando duas tarefas correspondem
+ao pedido, o agente usa o comportamento geral; diga `Use a skill <nome>` para escolher.
+Tipo, formato padrão, instruções e gatilhos podem ser editados na aba Skills e são
+sincronizados. Em uma continuação, a tarefa ativa é mantida até outra ser solicitada;
+editar, pausar ou excluir uma skill é respeitado no próximo turno.
 
 ### Nuvem e múltiplas contas
 
