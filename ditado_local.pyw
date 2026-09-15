@@ -1,5 +1,6 @@
 import ctypes
 import gc
+import json
 import math
 import os
 import queue
@@ -57,10 +58,12 @@ from faster_whisper import WhisperModel
 
 from ditado_ai import (
     OllamaClient,
+    OLLAMA_MODEL,
     OllamaModelMissingError,
     OllamaUnavailableError,
     apply_custom_corrections,
     correction_prompt,
+    transcription_vocabulary,
     normalize_agent_conversation,
     select_voice_skill,
 )
@@ -86,7 +89,7 @@ from ditado_cloud import (
     CloudSyncManager,
     RecoveryKeyRequired,
 )
-from ditado_storage import AppConfig, HistoryStore
+from ditado_storage import AppConfig, HistoryStore, atomic_write_text
 from ditado_harness import normalize_identity, normalize_prose_punctuation
 from ditado_theme import (
     APP_COLORS,
@@ -459,7 +462,10 @@ class DitadoLocalApp:
             self.config,
             self.history,
         )
-        self.ollama = OllamaClient()
+        self.ollama = OllamaClient(
+            model=os.environ.get("DITADO_OLLAMA_MODEL") or self.config.get("agent_model", OLLAMA_MODEL),
+            keep_alive=self.config.get("agent_keep_alive", "2h"),
+        )
         self.playback_mute = PlaybackMuteController()
 
         self.root = ctk.CTk()
@@ -473,6 +479,9 @@ class DitadoLocalApp:
         self.events = queue.SimpleQueue()
         self.model_lock = threading.Lock()
         self.model = None
+        self.runtime_status_path = APP_ROOT / f"runtime-{INSTANCE_NAMESPACE}.json"
+        self.runtime_status_lock = threading.Lock()
+        self.runtime_status = {"pid": os.getpid(), "ready": False}
         self.model_profile_id = None
         initial_profile_id = self.config.get("transcription_profile", "balanced")
         initial_profile = resolve_transcription_profile(initial_profile_id)
@@ -3135,6 +3144,7 @@ class DitadoLocalApp:
             self.target_window = ctypes.windll.user32.GetForegroundWindow()
             self.recording_mode = mode
             self.audio_chunks = []
+            self.audio_capture_errors = 0
             self.current_level = 0.0
             self._begin_text_capture(mode)
             if bool(self.mute_playback_while_recording.get()):
@@ -3199,6 +3209,8 @@ class DitadoLocalApp:
         )
 
     def _capture_audio(self, indata, _frames, _time_info, _status):
+        if _status:
+            self.audio_capture_errors = getattr(self, "audio_capture_errors", 0) + 1
         channel = indata[:, 0].copy()
         self.audio_chunks.append(channel)
         rms = float(np.sqrt(np.mean(np.square(channel)))) if channel.size else 0.0
@@ -3355,6 +3367,17 @@ class DitadoLocalApp:
             return
         threading.Thread(target=self._preload_models, daemon=True).start()
 
+    def _write_runtime_status(self, **changes):
+        """Local operational evidence only; never write audio, text or prompts."""
+        if not hasattr(self, "runtime_status_path"):
+            return
+        try:
+            with self.runtime_status_lock:
+                self.runtime_status.update(changes, updated_at=time.time())
+                atomic_write_text(self.runtime_status_path, json.dumps(self.runtime_status, ensure_ascii=False, indent=2))
+        except OSError:
+            pass  # Diagnostics must not interrupt dictation.
+
     def _preload_models(self):
         try:
             self._ensure_whisper_model()
@@ -3373,6 +3396,7 @@ class DitadoLocalApp:
             list(segments)
             self.events.put(("status", "Whisper pronto. Preparando revisão local..."))
             self.events.put(("model_ready", None))
+            self._write_runtime_status(ready=True, transcription_backend=self.model_backend)
         except Exception as error:
             self.events.put(("error", f"Não foi possível preparar o Whisper: {error}"))
             return
@@ -3382,6 +3406,7 @@ class DitadoLocalApp:
             try:
                 self.ollama.warm_up()
                 self.agent_backend = f"{self.ollama.model}  •  Ollama local  •  pronto"
+                self._write_runtime_status(agent_model=self.ollama.model, agent_ready=True)
                 self.events.put(("agent_ready", None))
                 return
             except (OllamaUnavailableError, OllamaModelMissingError) as error:
@@ -3449,15 +3474,22 @@ class DitadoLocalApp:
             gpu_error = "bibliotecas CUDA 12 e cuDNN 8 não encontradas"
             if is_cuda_runtime_available():
                 try:
+                    compute_type = self.config.get("transcription_compute_type", "float16")
+                    if compute_type not in {"float16", "int8_float16"}:
+                        compute_type = "float16"
                     self.model = WhisperModel(
                         profile["model"],
                         device="cuda",
-                        compute_type="float16",
+                        compute_type=compute_type,
                         num_workers=1,
                     )
                     self.model_profile_id = profile_id
                     self.model_backend = (
                         f"{profile['backend_name']}  •  CUDA  •  GPU"
+                    )
+                    self._write_runtime_status(
+                        transcription_model=profile["model"], device="cuda", compute_type=compute_type,
+                        degraded=False,
                     )
                     return
                 except Exception as error:
@@ -3474,12 +3506,17 @@ class DitadoLocalApp:
             self.model_backend = (
                 f"Whisper Small  •  CPU  •  GPU indisponível: {gpu_error}"
             )
+            self._write_runtime_status(
+                transcription_model="small", device="cpu", compute_type="int8",
+                degraded=True, ready=False,
+            )
 
     def _transcribe_and_process(self, audio, mode):
         started_at = time.perf_counter()
         try:
             self._ensure_whisper_model()
             corrections = self.config.get("corrections", [])
+            vocabulary = self.config.get("transcription_vocabulary", [])
             resampled_audio = self._resample_to_16khz(audio)
             profile = resolve_transcription_profile(
                 self.config.get("transcription_profile", "balanced")
@@ -3487,6 +3524,7 @@ class DitadoLocalApp:
             transcription_language = resolve_transcription_language(
                 self.config.get("transcription_language", "auto")
             )
+            asr_started = time.perf_counter()
             segments, _info = self.model.transcribe(
                 resampled_audio,
                 language=transcription_language,
@@ -3495,9 +3533,10 @@ class DitadoLocalApp:
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 250},
                 condition_on_previous_text=False,
-                initial_prompt=correction_prompt(corrections),
+                initial_prompt=correction_prompt(corrections, vocabulary, transcription_language),
             )
             spoken_text = " ".join(segment.text.strip() for segment in segments).strip()
+            asr_seconds = time.perf_counter() - asr_started
             spoken_text = apply_custom_corrections(spoken_text, corrections)
             spoken_text = normalize_prose_punctuation(spoken_text)
             if not spoken_text:
@@ -3569,13 +3608,22 @@ class DitadoLocalApp:
                         )
                     )
                     try:
-                        final_text = self.ollama.correct_grammar(final_text)
+                        final_text = self.ollama.correct_grammar(
+                            final_text, protected_terms=transcription_vocabulary(corrections, vocabulary)
+                        )
                         final_text = apply_custom_corrections(final_text, corrections)
                     except Exception:
                         final_text = spoken_text
                 final_text = normalize_prose_punctuation(final_text)
 
             elapsed = time.perf_counter() - started_at
+            self._write_runtime_status(last_transcription={
+                "mode": mode, "language": transcription_language,
+                "audio_seconds": round(len(resampled_audio) / SAMPLE_RATE, 3),
+                "asr_seconds": round(asr_seconds, 3), "total_seconds": round(elapsed, 3),
+                "grammar_enabled": bool(self.config.get("grammar_correction", True)),
+                "capture_errors": getattr(self, "audio_capture_errors", 0),
+            })
             self.events.put(
                 (
                     "finish",

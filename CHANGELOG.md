@@ -2,6 +2,20 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.5 - 2026-09-15
+
+- Instalação opcional das bibliotecas NVIDIA com `install.ps1 -EnableGpu`,
+  verificando SHA-256 e preservando licenças, para habilitar o Whisper na GPU.
+- Quantização `int8_float16` configurável e dicas de vocabulário separadas das
+  correções obrigatórias, incluindo português com termos técnicos em inglês.
+- Agente padrão atualizado para Qwen3.5 9B, com geração direta sobre a fonte
+  original e permanência configurável no Ollama, evitando a etapa de notas.
+- Melhorias na identificação do destinatário, na preservação do idioma e nas
+  verificações de negações, números, ambientes e termos durante revisão gramatical.
+- Compatibilidade com conversas anteriores do agente e diagnóstico operacional
+  local de backend e duração, sem registrar áudio, transcrições ou prompts.
+- Novas instalações continuam sem identidade, correções, regras ou skills pessoais.
+
 ## 0.4.4 - 2026-09-11
 
 - Contexto do agente cresce conforme o tamanho do pedido, de 8192 até 65536 tokens,

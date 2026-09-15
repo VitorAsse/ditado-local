@@ -1,4 +1,4 @@
-# Harness do agente, versão 3
+# Harness do agente, versão 4
 
 O código de preparação e validação está em `ditado_harness.py`; a execução local e
 continuação estão em `ditado_ai.py`. Nenhum nome de pessoa, plataforma ou exemplo de
@@ -41,13 +41,14 @@ verificações de eco literal e números restritos à fonte são exclusivas de t
 com seleção; formato, limites e identidade continuam sendo considerados. O contrato
 explicita que o modelo não tem ferramentas nem acesso vivo a aplicativos ou à internet.
 
-Normalmente há uma geração. Ao redigir uma mensagem nova para um destinatário explícito
-com autor configurado e vários participantes reconhecidos na fonte, uma chamada local
-anterior prepara o propósito, encaminhamento, dono do bloqueio e pedidos fora do escopo.
-Essa preparação analisa a fonte inteira; a redação usa as notas resultantes.
-As notas são inferências do modelo, podem errar e não são tratadas como prova de verdade.
-São transitórias, sem logs nem gravação no perfil. A seleção original e os turnos finais
-permanecem no histórico criptografado para continuação.
+Há uma geração direta com a fonte original. Conversas reconhecidas identificam cada
+falante e sua relação com a identidade configurada, sem reescrever as falas. O contrato
+preserva quem pediu o quê e a quem; um encaminhamento não implica responsabilidade
+permanente. Nenhuma chamada intermediária substitui a fonte por notas inferidas.
+O modelo usa `think: false` e permanece preparado pelo período `agent_keep_alive`.
+A seleção original e os turnos finais permanecem no histórico cifrado para continuação.
+Pedidos como “mensagem minha para o Bruno em português” reconhecem o destinatário sem
+incluir o idioma no nome. “Preserve os termos técnicos em inglês” não traduz a mensagem.
 
 Há modos de saída distintos para mensagem, prosa, lista, uma linha, código, JSON e
 estrutura preservada. A formatação de parágrafos só altera espaços e quebras; não
@@ -56,8 +57,12 @@ também preservam a estrutura solicitada.
 
 As verificações detectam eco do pedido, JSON inválido, violações simples de formato,
 idioma explícito quando identificável, números novos e alguns padrões de autoria em
-terceira pessoa. Pode haver um único reparo focado. Uma falha persistente bloqueia a
-colagem; não se repete uma revisão geral. O reparo não pode trocar um idioma identificado.
+terceira pessoa. Em textos sem vários falantes, também detectam alguns conectivos
+causais novos quando o usuário não pediu uma explicação. Pode haver um único reparo focado. Uma falha persistente bloqueia a
+colagem; não se repete uma revisão geral. Se uma edição simples continuar inventando
+um vínculo causal, a fonte original pode ser devolvida com a formatação pedida, desde
+que passe nas verificações de saída. Essa alternativa não se aplica a mensagens novas
+com destinatário. O reparo não pode trocar um idioma identificado.
 Essas verificações são heurísticas; não garantem atribuição, completude nem ausência
 de invenções sem números. Formatação correta não significa conteúdo correto.
 
@@ -79,6 +84,8 @@ A persistência aceita turnos desse tamanho e até 96000 caracteres por conversa
 Históricos além de 14 mensagens são recusados sem cortar turnos.
 
 Continuações usam a seleção original, os turnos completos aceitos e as regras atuais.
+Conversas persistidas com harness v3 são aceitas e atualizadas em memória para v4;
+a fonte e os turnos são preservados.
 Trocas de tarefa, formato e destinatário simples são reconhecidas. Skills editadas,
 desativadas ou excluídas não continuam ativas por uma cópia antiga no histórico.
 Nenhuma instrução falada altera preferências persistentes.

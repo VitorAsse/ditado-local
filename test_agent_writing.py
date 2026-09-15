@@ -24,16 +24,31 @@ class AgentWritingTests(unittest.TestCase):
         return self.client.start_selected_text_conversation(
             self.source, self.instruction, user_identity=self.identity, **kwargs)
 
-    def test_multispeaker_message_prepares_context_before_drafting(self):
+    def test_multispeaker_message_drafts_once_from_original_evidence(self):
         result, conversation = self.start()
         system, user = self.client.chat.call_args.args
-        self.assertIn('FROM Morgan TO Alex', user)
-        self.assertIn(self.instruction, user)
-        self.assertIn(self.source, self.client.chat.call_args_list[0].args[1])
+        payload = json.loads(user)
+        self.assertEqual('Morgan', payload['CONTEXT']['user_identity']['display_name'])
+        self.assertEqual('Alex', payload['CONTEXT']['target_recipient'])
+        self.assertEqual(self.instruction, payload['REQUEST'])
+        self.assertEqual('Ask Alex; my export access is unavailable.\n', payload['SELECTED_TEXT']['messages'][1]['text'])
+        self.assertIn('referral', system.lower())
         self.assertEqual(self.message, result)
         self.assertEqual(result, conversation['messages'][-1]['content'])
-        self.assertEqual(2, self.client.chat.call_count)
+        self.assertEqual(1, self.client.chat.call_count)
         self.client.chat_messages.assert_not_called()
+
+    def test_previous_harness_conversations_keep_source_and_can_continue(self):
+        _, conversation = self.start()
+        conversation['harness']['version'] = 3
+        restored = normalize_agent_conversation(conversation)
+        self.assertIsNotNone(restored)
+        self.assertEqual(self.source, restored['original_text'])
+        self.assertEqual(conversation['messages'], restored['messages'])
+        result, updated = self.client.continue_selected_text_conversation(restored, 'Deixe mais cordial.')
+        self.assertEqual(self.message, result)
+        self.assertEqual(4, updated['harness']['version'])
+        self.assertEqual(self.source, updated['original_text'])
 
     def test_follow_up_keeps_source_order_identity_and_current_preferences(self):
         _, conversation = self.start()
@@ -47,10 +62,10 @@ class AgentWritingTests(unittest.TestCase):
         self.assertIn('Be friendly.', messages[0]['content'])
         self.assertEqual(1, updated['system_prompt'].count(BASE_SYSTEM_PROMPT))
         self.assertEqual(self.message, result)
-        self.assertEqual(2, self.client.chat.call_count)
+        self.assertEqual(1, self.client.chat.call_count)
 
     def test_narrow_repair_preserves_source(self):
-        self.client.chat.side_effect = [self.message, self.message + ' I reviewed 99 records.']
+        self.client.chat.return_value = self.message + ' I reviewed 99 records.'
         result, _ = self.start()
         repair = self.client.chat_messages.call_args.args[0]
         self.assertEqual(['unsupported_number'], json.loads(repair[-1]['content'])['VALIDATION_FAILURES'])
@@ -59,7 +74,7 @@ class AgentWritingTests(unittest.TestCase):
         self.client.chat_messages.assert_called_once()
 
     def test_failed_repair_never_returns_invalid_result(self):
-        self.client.chat.side_effect = [self.message, self.message + ' I reviewed 99 records.']
+        self.client.chat.return_value = self.message + ' I reviewed 99 records.'
         self.client.chat_messages.return_value = self.message + ' I reviewed 99 records.'
         with self.assertRaisesRegex(RuntimeError, 'não foi colado'):
             self.start()

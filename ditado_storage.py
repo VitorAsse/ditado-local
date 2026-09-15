@@ -113,6 +113,10 @@ class AppConfig:
         "mute_playback_while_recording": True,
         "transcription_profile": "balanced",
         "transcription_language": "auto",
+        "transcription_vocabulary": [],
+        "transcription_compute_type": "float16",
+        "agent_model": "qwen3.5:9b",
+        "agent_keep_alive": "2h",
         "corrections": [],
         "rules": [],
         "skills": [],
@@ -138,6 +142,7 @@ class AppConfig:
     # These choices describe this PC, rather than the user's writing preferences.
     DEVICE_LOCAL_PREFERENCE_KEYS = {
         "microphone_name", "startup_enabled", "transcription_profile",
+        "transcription_compute_type", "transcription_vocabulary", "agent_model", "agent_keep_alive",
     }
 
     def __init__(self, path=None):

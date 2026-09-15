@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.4.4"
+    [string]$Version = "0.4.5"
 )
 
 $ErrorActionPreference = "Stop"
@@ -108,6 +108,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $scriptsSource "configure-supabase-s
     throw "Launcher seguro ausente: scripts\configure-supabase-secure.cmd"
 }
 New-Item -ItemType Directory -Path $scriptsDestination -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $scriptsSource 'install-gpu.py') -Destination $scriptsDestination
 Copy-Item `
     -LiteralPath (Join-Path $scriptsSource "configure-supabase-secure.ps1") `
     -Destination (Join-Path $scriptsDestination "configure-supabase-secure.ps1")

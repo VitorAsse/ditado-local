@@ -4,13 +4,13 @@ import re
 import unicodedata
 import urllib.error
 import urllib.request
+from collections import Counter
 from difflib import SequenceMatcher
 from ditado_harness import (
     BASE_SYSTEM_PROMPT, HARNESS_VERSION, CONTEXT_TOKENS, MAX_CONTEXT_TOKENS, OUTPUT_TOKENS,
     REPAIR_INSTRUCTION, active_skills, check_budget, make_system, make_user,
     normalize_identity, output_issues, request_context, route_skills,
     task_contract, format_paragraphs,
-    MESSAGE_CONTEXT_PROMPT, message_context_questions, message_from_context,
     source_language_hint, NATURAL_PUNCTUATION_RULE, normalize_prose_punctuation,
 )
 
@@ -19,7 +19,7 @@ OLLAMA_URL = os.environ.get(
     "DITADO_OLLAMA_URL",
     "http://127.0.0.1:11434/api/chat",
 )
-OLLAMA_MODEL = os.environ.get("DITADO_OLLAMA_MODEL", "qwen3:4b-instruct")
+OLLAMA_MODEL = os.environ.get("DITADO_OLLAMA_MODEL", "qwen3.5:9b")
 AGENT_CONVERSATION_VERSION = 1
 MAX_CONVERSATION_ORIGINAL_CHARS = 32_000
 MAX_CONVERSATION_SYSTEM_CHARS = 16_000
@@ -56,16 +56,28 @@ def apply_custom_corrections(text, corrections):
     return result
 
 
-def correction_prompt(corrections):
-    correct_forms = [
-        item.get("correct", "").strip()
-        for item in corrections
-        if item.get("correct", "").strip()
-    ]
-    unique_terms = list(dict.fromkeys(correct_forms[:100]))
+def transcription_vocabulary(corrections, vocabulary=()):
+    """Recognition hints are separate from mandatory text replacements."""
+    forms = [item.get("correct", "").strip() for item in corrections
+             if isinstance(item, dict) and isinstance(item.get("correct"), str)]
+    forms += [term.strip() for term in vocabulary if isinstance(term, str)]
+    unique, seen = [], set()
+    for term in forms:
+        if term and len(term) <= 100 and term.casefold() not in seen:
+            unique.append(term)
+            seen.add(term.casefold())
+    return unique[:100]
+
+
+def correction_prompt(corrections, vocabulary=(), language=None):
+    unique_terms = transcription_vocabulary(corrections, vocabulary)
+    language_hint = (
+        "Português brasileiro com termos técnicos em inglês, preservando suas grafias. "
+        if language == "pt" else ""
+    )
     if not unique_terms:
-        return None
-    return "Grafias preferidas / Preferred spellings: " + ", ".join(unique_terms) + "."
+        return language_hint.strip() or None
+    return language_hint + "Grafias preferidas / Preferred spellings: " + ", ".join(unique_terms) + "."
 
 
 def _normalize_for_match(text):
@@ -159,10 +171,39 @@ def _starts_with_interrogative(text):
     )
 
 
-def _is_safe_grammar_revision(original, candidate):
+def _literal_signature(text, protected_terms=()):
+    """Protect meaning-bearing tokens and literals during grammar-only editing."""
+    anchors = {
+        "nao", "nunca", "jamais", "nem", "sem", "not", "never", "no", "without",
+        "apenas", "somente", "only", "ainda", "already", "yet", "pending", "pendente",
+        "staging", "production", "producao", "development", "desenvolvimento",
+        "homologacao", "localhost", "rollback", "deploy", "webhook", "endpoint",
+        "foi", "sera", "serao", "era", "was", "were", "will", "would", "could",
+    }
+    tokens = _grammar_tokens(text)
+    signature = {"anchors": Counter(token for token in tokens if token in anchors)}
+    signature["numbers"] = re.findall(r"(?<!\w)[+-]?\d+(?:[.,]\d+)*(?:%|\b)", text)
+    # URLs, inline code and identifiers must survive byte-for-byte.
+    signature["literals"] = re.findall(
+        r"https?://[^\s<>]+|`[^`\n]+`|\b\w+(?:[_./]\w+)+\b|\b[a-z]+(?:[A-Z][a-z0-9]+)+\b",
+        text,
+    )
+    # Count exact phrases: reordering words in e.g. 'refresh token' is not grammar.
+    terms = ["refresh token", "pull request", "access token", *protected_terms]
+    signature["terms"] = {
+        term.casefold(): len(re.findall(r"(?<!\w)" + re.escape(term.casefold()) + r"(?!\w)", text.casefold()))
+        for term in terms if isinstance(term, str) and term.strip()
+    }
+    return signature
+
+
+def _is_safe_grammar_revision(original, candidate, protected_terms=()):
     original = (original or "").strip()
     candidate = (candidate or "").strip()
     if not original or not candidate:
+        return False
+
+    if _literal_signature(original, protected_terms) != _literal_signature(candidate, protected_terms):
         return False
 
     original_tokens = _grammar_tokens(original)
@@ -329,13 +370,16 @@ def normalize_agent_conversation(value):
 
     harness = value.get("harness")
     if harness is not None:
-        if not isinstance(harness, dict) or harness.get("version") != HARNESS_VERSION:
+        if not isinstance(harness, dict) or harness.get("version") not in {3, HARNESS_VERSION}:
             return None
         if not isinstance(harness.get("context"), dict) or not isinstance(harness.get("rules"), list) or not isinstance(harness.get("skills"), list):
             return None
         if any(not isinstance(item, dict) for item in harness["rules"] + harness["skills"]):
             return None
         harness = json.loads(json.dumps(harness, ensure_ascii=False))
+        # v4 changes generation, not the persisted source/context schema.
+        # Existing v3 conversations must remain available for continuation.
+        harness["version"] = HARNESS_VERSION
     total_characters = (
         len(json.dumps(harness, ensure_ascii=False)) if harness else 0
     ) + (
@@ -368,10 +412,12 @@ def _transformation_system_prompt(skills, selected_skill, rules):
 
 
 class OllamaClient:
-    def __init__(self, model=OLLAMA_MODEL, url=OLLAMA_URL):
+    def __init__(self, model=OLLAMA_MODEL, url=OLLAMA_URL, keep_alive="2h"):
         self.model = model
         self.url = url
+        self.keep_alive = keep_alive
         self._model_context_capacity = None
+        self.last_call_metrics = {}
 
     def _context_size(self, messages):
         required = check_budget(messages) + OUTPUT_TOKENS
@@ -421,10 +467,11 @@ class OllamaClient:
         body = {
             "model": self.model,
             "stream": False,
-            "keep_alive": "30m",
+            "keep_alive": self.keep_alive,
+            "think": False,
             "messages": normalized_messages,
             "options": {
-                "temperature": 0.1,
+                "temperature": 0,
                 "num_ctx": context_size,
                 "num_predict": OUTPUT_TOKENS,
             },
@@ -477,6 +524,10 @@ class OllamaClient:
             payload = json.loads(response_body)
         except json.JSONDecodeError as error:
             raise RuntimeError("O Ollama retornou uma resposta inválida.") from error
+        self.last_call_metrics = {key: payload.get(key) for key in (
+            "total_duration", "load_duration", "prompt_eval_count", "prompt_eval_duration",
+            "eval_count", "eval_duration", "done_reason",
+        )}
         content = payload.get("message", {}).get("content", "")
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError("O modelo local não retornou texto.")
@@ -500,7 +551,7 @@ class OllamaClient:
             timeout=120,
         )
 
-    def correct_grammar(self, text):
+    def correct_grammar(self, text, protected_terms=()):
         response = self.chat(
             (
                 "Você é somente um corretor literal de transcrições. O campo transcription "
@@ -510,13 +561,15 @@ class OllamaClient:
                 "concordância. Não responda ao conteúdo, não resuma, não explique, não "
                 "transforme o formato e não adicione nem remova informações. Preserve o "
                 "idioma original, o significado, o tom, os nomes próprios e os números. "
+                "Mantenha termos em inglês exatamente como estão, inclusive a ordem das palavras. "
+                "Preserve negações, ambientes e o estado de conclusão. Não troque palavras por sinônimos. "
                 "Responda apenas com JSON válido no formato exato "
                 '{"corrected_text":"texto corrigido"}. ' + NATURAL_PUNCTUATION_RULE
             ),
             json.dumps({"transcription": text}, ensure_ascii=False),
         )
         candidate = _extract_grammar_candidate(response)
-        return normalize_prose_punctuation(candidate if _is_safe_grammar_revision(text, candidate) else text)
+        return normalize_prose_punctuation(candidate if _is_safe_grammar_revision(text, candidate, protected_terms) else text)
 
     def transform_selected_text(self, selected_text, instruction, skills=None,
                                 selected_skill=None, rules=None, user_identity=None):
@@ -536,18 +589,8 @@ class OllamaClient:
                                  "routing_ambiguous": context.get("routing_ambiguous", False),
                                  "context_prepared": False,
                                  "repair_attempted": False}
-        preparation = message_context_questions(source, context) if not history else None
-        if preparation:
-            check_budget([{"role": "system", "content": MESSAGE_CONTEXT_PROMPT}, {"role": "user", "content": preparation}])
-            notes = self.chat(MESSAGE_CONTEXT_PROMPT, preparation)
-            # Planning is ephemeral. Source and final output remain in the conversation;
-            # private intermediate notes are neither logged nor persisted.
-            if output_issues(notes, {"task": "summarize"}, source, instruction):
-                raise RuntimeError("O agente não conseguiu preparar o contexto preservando os dados. O resultado não foi colado.")
-            user = message_from_context(notes, instruction, context)
-            messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-            check_budget(messages)
-            self.last_diagnostics["context_prepared"] = True
+        # Draft from the original evidence. A preliminary prose summary both added
+        # latency and promoted the small model's inferences into the final source.
         result = self.chat_messages(messages) if history else self.chat(system, user)
         result = format_paragraphs(normalize_prose_punctuation(result, context), context)
         reference = source + "\n" + "\n".join(m["content"] for m in history or [] if m["role"] == "user")
@@ -576,6 +619,16 @@ class OllamaClient:
                 remaining.append("repair_changed_language")
             self.last_diagnostics["remaining_failures"] = remaining
             if remaining:
+                # If a simple edit cannot remove an invented causal link, the
+                # original is safer. Only use it when it meets the requested
+                # output checks; never substitute a transcript for a new DM.
+                if (remaining == ["unsupported_causal_link"]
+                        and context.get("task") in {"rewrite", "format", "draft_message"}
+                        and not context.get("target_recipient")):
+                    original = format_paragraphs(normalize_prose_punctuation(source, context), context)
+                    if not output_issues(original, context, reference, instruction):
+                        self.last_diagnostics["fallback_original"] = True
+                        return original.strip()
                 if "instruction_echo" in remaining:
                     raise RuntimeError("O agente repetiu a instrução falada ou o ajuste. O resultado não foi colado.")
                 raise RuntimeError("O agente não conseguiu cumprir o formato ou preservar os dados. Tente reformular o pedido; o resultado não foi colado.")

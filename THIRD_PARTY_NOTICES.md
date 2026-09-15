@@ -15,6 +15,11 @@ instalação ou primeira execução.
 | [OpenNMT/CTranslate2](https://github.com/OpenNMT/CTranslate2) | Inferência otimizada | MIT |
 | [OpenAI Whisper](https://github.com/openai/whisper) | Arquitetura e pesos originais | MIT |
 | [dropbox-dash/faster-whisper-large-v3-turbo](https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo) | Modelo convertido usado no perfil equilibrado | MIT |
+| [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-9B) | Agente local pelo Ollama | Apache-2.0 |
+
+A opção `-EnableGpu` baixa wheels oficiais `nvidia-cublas-cu12` 12.4.5.8 e
+`nvidia-cudnn-cu12` 8.9.7.29, sujeitos às licenças proprietárias NVIDIA incluídas
+nos próprios wheels. O instalador preserva esses textos junto às DLLs em `gpu-libs`.
 
 ## Dependências diretas
 

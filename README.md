@@ -41,7 +41,7 @@ Também é possível fazer a configuração manual pelo
 [instalador oficial do Ollama](https://ollama.com/download/windows) e pelo comando:
 
 ```powershell
-ollama pull qwen3:4b-instruct
+ollama pull qwen3.5:9b
 ```
 
 ### 2. Baixe e instale
@@ -51,6 +51,15 @@ Baixe o arquivo `DitadoLocal-<versão>.zip` na página de Releases, extraia e ex
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+Para uma GPU NVIDIA compatível, instale também as bibliotecas privadas de aceleração:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -EnableGpu
+```
+
+Depois da preparação inicial, confira se a interface mostra `CUDA • GPU`. Sem as
+bibliotecas ou sem uma GPU compatível, o aplicativo usa Whisper Small na CPU.
 
 O instalador habilita a inicialização automática com o Windows por padrão. Para
 instalar sem esse comportamento:
@@ -248,12 +257,30 @@ O arquivo é criado em:
 Consulte [`config.example.json`](config.example.json) para ver a estrutura sem dados
 pessoais.
 
+Com uma conta conectada, as preferências ativas ficam em
+`%LOCALAPPDATA%\faster-whisper\profiles\<id-da-conta>\config.json`.
+Encerre o aplicativo antes de editar manualmente e abra novamente para aplicar
+mudanças de modelo, quantização, vocabulário ou permanência do agente.
+
 Variáveis opcionais:
 
 | Variável | Padrão | Finalidade |
 | --- | --- | --- |
 | `DITADO_OLLAMA_URL` | `http://127.0.0.1:11434/api/chat` | Endpoint compatível com a API de chat do Ollama |
-| `DITADO_OLLAMA_MODEL` | `qwen3:4b-instruct` | Modelo local usado para revisão e ações |
+| `DITADO_OLLAMA_MODEL` | `agent_model` da configuração, inicialmente `qwen3.5:9b` | Modelo local usado para revisão e ações |
+
+`agent_keep_alive` mantém o modelo preparado no Ollama (padrão `2h`). O agente usa
+uma geração direta sobre a seleção original, sem substituir a conversa por um resumo
+intermediário. A validação pode pedir uma correção adicional quando detecta uma falha.
+O modo de raciocínio interno fica desativado para reduzir a demora. Em máquinas com
+menos memória, `agent_model` pode ser `qwen3.5:4b` após baixar esse modelo.
+
+Para ditado em português com vocabulário técnico, selecione Português e preencha
+`transcription_vocabulary` com uma lista de grafias, por exemplo
+`["pull request", "webhook", "refresh token"]`. São dicas de reconhecimento;
+substituições obrigatórias continuam na lista de correções. Desativar a revisão
+gramatical evita uma chamada adicional ao agente em cada ditado. A revisão opcional
+recusa mudanças detectáveis em negações, números, ambientes e termos protegidos.
 
 ## GPU
 
@@ -262,6 +289,22 @@ Sem as bibliotecas NVIDIA compatíveis, o aplicativo utiliza automaticamente o m
 Whisper Small em CPU com quantização INT8.
 
 Os binários de CUDA, cuDNN e os pesos dos modelos não são incluídos no repositório.
+
+Para instalar as bibliotecas privadas do aplicativo, use `install.ps1 -EnableGpu`.
+Em uma instalação existente, com o aplicativo fechado:
+
+```powershell
+& "$env:LOCALAPPDATA\faster-whisper\.venv\Scripts\python.exe" .\scripts\install-gpu.py
+```
+
+O instalador verifica SHA-256 de wheels oficiais NVIDIA e guarda DLLs e licenças em
+`%LOCALAPPDATA%\faster-whisper\gpu-libs`, sem alterar o driver ou o PATH global.
+`transcription_compute_type` aceita `float16` (padrão) ou `int8_float16` para reduzir
+o uso de memória da GPU. Verifique a qualidade com seus áudios antes de trocar.
+
+O arquivo local `runtime-DitadoLocalFasterWhisper.json` registra o backend efetivo, prontidão e os
+tempos da última transcrição. Não contém áudio, texto ou prompts e não é enviado
+à nuvem. Se aparecer `degraded: true`, o aplicativo está usando o fallback em CPU.
 
 ## Desenvolvimento
 

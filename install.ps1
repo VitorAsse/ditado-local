@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$StartWithWindows = $true,
-    [switch]$SkipLaunch
+    [switch]$SkipLaunch,
+    [switch]$EnableGpu
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,6 +74,13 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 & $venvPython -m pip install --disable-pip-version-check --require-hashes -r $requirementsPath
 if ($LASTEXITCODE -ne 0) {
     throw "Nao foi possivel instalar as dependencias do Ditado Local."
+}
+
+if ($EnableGpu) {
+    & $venvPython (Join-Path $sourceRoot 'scripts\install-gpu.py')
+    if ($LASTEXITCODE -ne 0) {
+        throw "Nao foi possivel preparar as bibliotecas da GPU."
+    }
 }
 
 $applicationFiles = @(
