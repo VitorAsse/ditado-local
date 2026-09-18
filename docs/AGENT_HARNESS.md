@@ -6,6 +6,13 @@ resposta pessoal faz parte das regras de produção.
 
 ## Contrato
 
+Pedidos de edição devem produzir o conteúdo completo pronto para substituir a
+seleção, preservando os trechos não afetados e sem introduções, explicações ou
+delimitadores Markdown extras. Pedidos explícitos de perguntas, análises, resumos
+ou fragmentos continuam prevalecendo. Nas continuações, a edição parte do último
+resultado e preserva as alterações anteriores. As pistas heurísticas de tarefa e
+formato não substituem a interpretação do pedido atual pelo modelo.
+
 Regra global de estilo: a prosa não usa travessões nem hífens como pausas ou
 separadores retóricos no meio das frases. Essa regra vale para todos os perfis e
 prevalece sobre pedidos, regras e skills de estilo. O modelo deve redigir a frase
@@ -70,6 +77,9 @@ Uma normalização final converte esses separadores em pontuação comum, sem mu
 palavras. Aplica-se também ao ditado sem revisão ou quando o modelo falha, e após
 correções pessoais. Preserva marcadores de listas, palavras compostas, intervalos
 numéricos, números negativos, links, código delimitado e saídas de código ou JSON.
+Nos modos automático e de estrutura preservada, não altera pontuação nem remove
+espaços nas extremidades: o conteúdo pode ser código sem delimitadores. Nesses
+modos, a orientação de estilo fica a cargo do modelo.
 
 ## Contexto e continuidade
 
@@ -77,8 +87,10 @@ Antes de cada chamada, o limite conservador em bytes UTF-8 reserva espaço para 
 e template. Não é uma contagem exata de tokens e pode recusar textos que caberiam em
 uma tokenização específica. O contexto começa em 8192 e cresce em blocos de 2048,
 até 65536 tokens, respeitando a capacidade consultada em `/api/show` do modelo
-configurado. Textos grandes têm até 300 segundos para responder. Mantemos
-`num_predict=1400`; respostas encerradas por limite não são entregues.
+configurado. Textos grandes têm até 300 segundos para responder. `num_predict`
+varia entre 1400 e 16384, usando o tamanho UTF-8 do maior turno não sistêmico mais
+a reserva de template como estimativa conservadora. O mesmo orçamento de saída
+é reservado no contexto; respostas encerradas por limite não são entregues.
 O mini agente aceita entradas de até 32000 caracteres, inclusive em continuações.
 A persistência aceita turnos desse tamanho e até 96000 caracteres por conversa.
 Históricos além de 14 mensagens são recusados sem cortar turnos.

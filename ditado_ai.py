@@ -8,7 +8,7 @@ from collections import Counter
 from difflib import SequenceMatcher
 from ditado_harness import (
     BASE_SYSTEM_PROMPT, HARNESS_VERSION, CONTEXT_TOKENS, MAX_CONTEXT_TOKENS, OUTPUT_TOKENS,
-    REPAIR_INSTRUCTION, active_skills, check_budget, make_system, make_user,
+    REPAIR_INSTRUCTION, active_skills, check_budget, output_budget, make_system, make_user,
     normalize_identity, output_issues, request_context, route_skills,
     task_contract, format_paragraphs,
     source_language_hint, NATURAL_PUNCTUATION_RULE, normalize_prose_punctuation,
@@ -420,7 +420,7 @@ class OllamaClient:
         self.last_call_metrics = {}
 
     def _context_size(self, messages):
-        required = check_budget(messages) + OUTPUT_TOKENS
+        required = check_budget(messages) + output_budget(messages)
         if required <= CONTEXT_TOKENS:
             return CONTEXT_TOKENS
         # Query the configured model, not a hardcoded model capability. Cache only
@@ -473,7 +473,7 @@ class OllamaClient:
             "options": {
                 "temperature": 0,
                 "num_ctx": context_size,
-                "num_predict": OUTPUT_TOKENS,
+                "num_predict": output_budget(normalized_messages),
             },
         }
         request = urllib.request.Request(
@@ -632,7 +632,7 @@ class OllamaClient:
                 if "instruction_echo" in remaining:
                     raise RuntimeError("O agente repetiu a instrução falada ou o ajuste. O resultado não foi colado.")
                 raise RuntimeError("O agente não conseguiu cumprir o formato ou preservar os dados. Tente reformular o pedido; o resultado não foi colado.")
-        return result if context.get("output_mode") == "code" else result.strip()
+        return result if context.get("output_mode") in {"auto", "preserve_structure", "code"} else result.strip()
 
     def start_free_conversation(self, instruction, skills=None, rules=None, user_identity=None):
         return self.start_selected_text_conversation(

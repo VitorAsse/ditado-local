@@ -2,6 +2,18 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.6 - 2026-09-18
+
+- Agente orientado a executar pedidos de edição e devolver o conteúdo completo
+  pronto para substituir a seleção, sem explicações ou delimitadores extras.
+- Continuação de edições preserva as alterações anteriores; perguntas e pedidos
+  de análise continuam recebendo a resposta solicitada.
+- Preservação de pontuação e espaços em saídas de formato automático ou estrutura
+  preservada, evitando alterações indevidas em código sem delimitadores Markdown.
+- Limite de geração adaptável entre 1400 e 16384 tokens, com reserva correspondente
+  no contexto, para permitir respostas completas em edições de textos maiores.
+- Testes de regressão para integridade de artefatos, histórico e limites do modelo.
+
 ## 0.4.5 - 2026-09-15
 
 - Instalação opcional das bibliotecas NVIDIA com `install.ps1 -EnableGpu`,

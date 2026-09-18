@@ -318,7 +318,7 @@ py -3.11 -m venv .venv
 Para montar o arquivo de uma Release:
 
 ```powershell
-powershell -File .\scripts\package-release.ps1 -Version 0.3.3
+powershell -File .\scripts\package-release.ps1 -Version 0.4.6
 ```
 
 ## Licença
