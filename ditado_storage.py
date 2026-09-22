@@ -139,11 +139,12 @@ class AppConfig:
         "quick_correction_gesture",
     }
 
-    # These choices describe this PC, rather than the user's writing preferences.
-    DEVICE_LOCAL_PREFERENCE_KEYS = {
+    # Account recovery includes the complete setup, including hardware/model choices.
+    SYNCED_PREFERENCE_KEYS |= {
         "microphone_name", "startup_enabled", "transcription_profile",
         "transcription_compute_type", "transcription_vocabulary", "agent_model", "agent_keep_alive",
     }
+    DEVICE_LOCAL_PREFERENCE_KEYS = set()
 
     def __init__(self, path=None):
         self.lock = threading.RLock()

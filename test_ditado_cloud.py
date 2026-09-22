@@ -351,14 +351,18 @@ class CloudSyncTests(unittest.TestCase):
         self.assertEqual([], config.get_rules())
         self.assertTrue(self.backend.sync_items[("user-a", "skill", skill_id)]["deleted_at"])
 
-    def test_all_portable_preferences_restore_without_changing_device_settings(self):
+    def test_complete_setup_restores_on_another_device(self):
         first, config, _, _ = self._manager("preferences-first")
         values = {"auto_paste": False, "grammar_correction": False,
                   "capture_clipboard_history": True, "mute_playback_while_recording": False,
                   "transcription_language": "en", "history_limit": 80,
                   "user_identity": {"display_name": "Morgan Lee", "aliases": ["Morgan", "M. Lee"]},
                   "agent_chat_hotkey": "Ctrl + Shift + Enter",
-                  "quick_correction_gesture": "Alt + clique direito"}
+                  "quick_correction_gesture": "Alt + clique direito",
+                  "microphone_name": "Microfone do primeiro PC", "startup_enabled": False,
+                  "transcription_profile": "max_precision", "transcription_compute_type": "int8_float16",
+                  "transcription_vocabulary": ["Agencify", "Supabase"],
+                  "agent_model": "qwen3.5:9b", "agent_keep_alive": "2h"}
         for key, value in values.items():
             config.set(key, value)
         config.set("microphone_name", "Microfone do primeiro PC")
@@ -368,10 +372,28 @@ class CloudSyncTests(unittest.TestCase):
         other.set("microphone_name", "Microfone do segundo PC")
         second.sync_once(recovery_code=recovery)
         self.assertEqual(values, {k:other.get(k) for k in values})
-        self.assertEqual("Microfone do segundo PC", other.get("microphone_name"))
-        self.assertEqual("balanced", other.get("transcription_profile"))
         cloud_keys = {r["item_id"] for r in self.backend.sync_items.values() if r["item_type"] == "preference"}
         self.assertEqual(set(values), cloud_keys)
+
+    def test_upgrade_adds_missing_setup_timestamps_and_syncs_existing_values(self):
+        manager, config, _, _ = self._manager("upgrade-settings")
+        config.set("transcription_vocabulary", ["Vocabulário existente"])
+        config.set("microphone_name", "Microfone existente")
+        for key in ("transcription_vocabulary", "microphone_name"):
+            config.data["_cloud_preference_timestamps"].pop(key, None)
+        config.save()
+        loaded = AppConfig(path=config.path)
+        manager.app_config = loaded
+        manager.sync_once()
+        for key in ("transcription_vocabulary", "microphone_name"):
+            row = self.backend.sync_items[("user-a", "preference", key)]
+            payload = decrypt_record(manager.state.master_key("user-a"), "user-a", "preference", key, row["ciphertext"])
+            self.assertEqual(config.get(key), payload["value"])
+        loaded.set("transcription_vocabulary", ["Vocabulário atualizado"])
+        manager.sync_once()
+        row = self.backend.sync_items[("user-a", "preference", "transcription_vocabulary")]
+        payload = decrypt_record(manager.state.master_key("user-a"), "user-a", "preference", "transcription_vocabulary", row["ciphertext"])
+        self.assertEqual(["Vocabulário atualizado"], payload["value"])
 
     def test_free_agent_conversation_restores_on_another_device(self):
         from ditado_ai import normalize_agent_conversation
@@ -476,7 +498,7 @@ class CloudSyncTests(unittest.TestCase):
         manager._accept_session(auth_payload("user-b", "b@example.com"), "b@example.com")
         self.assertEqual([], config.get_skills())
         self.assertEqual([], history.all())
-        self.assertEqual("Microfone deste PC", config.get("microphone_name"))
+        self.assertEqual("", config.get("microphone_name"))
 
     def test_switch_to_missing_account_profile_does_not_copy_active_account(self):
         manager, config, history, state = self._manager("account-switch")

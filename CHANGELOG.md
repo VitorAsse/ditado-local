@@ -2,6 +2,15 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.7 - 2026-09-22
+
+- Sincronização criptografada das 16 preferências, incluindo microfone, inicialização,
+  perfil de transcrição, processamento, vocabulário, modelo do agente e keep-alive.
+- Inclusão dos valores existentes na próxima sincronização sem migração de schema.
+- Testes de atualização e recuperação das configurações em outro perfil.
+- Recuperação em outro PC requer login e chave de recuperação; modelos, drivers e
+  atalhos do Windows continuam exigindo instalação/configuração local.
+
 ## 0.4.6 - 2026-09-18
 
 - Agente orientado a executar pedidos de edição e devolver o conteúdo completo

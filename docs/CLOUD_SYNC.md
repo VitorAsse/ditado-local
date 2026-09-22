@@ -9,7 +9,7 @@ A conta da nuvem é opcional e o ditado continua funcionando sem ela.
 - Contas separadas por `auth.users.id`, inclusive troca entre contas salvas no mesmo
   Windows.
 - Perfis locais independentes por conta.
-- Sincronização de correções, regras, skills, preferências selecionadas, transcrições,
+- Sincronização de correções, regras, skills, todas as preferências, transcrições,
   resultados do agente e o contexto necessário para continuar conversas.
 - Skills incluem nome, descrição, gatilhos, instruções, exemplos, tipo, formato padrão e estado ativo ou
   pausado. Criar, editar, pausar ou excluir uma skill ou regra solicita sincronização
@@ -46,12 +46,24 @@ A conta da nuvem é opcional e o ditado continua funcionando sem ela.
 - RLS em todas as tabelas expostas, com políticas baseadas em `auth.uid()` e grants
   explícitos apenas para `authenticated`.
 
+## Recuperação das configurações
+
+As 16 preferências incluem nome do microfone, inicialização com o Windows,
+perfil de transcrição, tipo de processamento, vocabulário personalizado, modelo do
+agente e tempo de permanência em memória. A atualização inclui automaticamente os
+valores já existentes na próxima sincronização, sem migração de schema.
+Esses campos pertencem à conta e também sincronizam entre seus PCs; a alteração
+mais recente prevalece. Eles não são copiados ao entrar em outra conta.
+
+Após recuperar em outro computador, reinicie o Ditado para carregar as escolhas de
+modelo/processamento e revise o microfone e o atalho de inicialização do Windows.
+Salvar a preferência não instala modelos, drivers nem recria atalhos do sistema.
+A chave de recuperação deve permanecer guardada fora do PC.
+
 ## O que nunca é enviado
 
 - áudio bruto;
-- nome do microfone;
-- configuração de inicialização com o Windows;
-- perfil/modelo de transcrição, cache de modelos e bibliotecas de GPU;
+- arquivos dos modelos, cache e bibliotecas de GPU;
 - tokens ou a chave mestra sem a proteção local do Windows.
 
 Nome do microfone, inicialização com o Windows e perfil de transcrição são escolhas
