@@ -723,7 +723,8 @@ class OllamaClient:
         system = make_system(current_rules, selected)
         history = [dict(m) for m in normalized["messages"]]
         history[0]["content"] = make_user(source, history[0]["content"], previous)
-        user = json.dumps({"REQUEST": follow_up, "CONTEXT": context}, ensure_ascii=False)
+        user = (follow_up if context.get("conversation_kind") == "free" else
+                json.dumps({"REQUEST": follow_up, "CONTEXT": context}, ensure_ascii=False))
         result = self._generate_checked(system, user, context, source, follow_up, history)
         updated = dict(normalized, system_prompt=system, rules_context=build_rules_context(current_rules))
         updated["harness"] = {"version": HARNESS_VERSION, "context": context,

@@ -95,15 +95,20 @@ class AgentChatWindow:
         self.input.pack(fill="x", padx=12, pady=(12, 8))
         self.input.bind("<Control-Return>", self._submit_from_event)
 
-        action_row = ctk.CTkFrame(composer, fg_color="transparent")
-        action_row.pack(fill="x", padx=12, pady=(0, 12))
         self.status_label = ctk.CTkLabel(
-            action_row,
+            composer,
             text="Ctrl + Enter para enviar",
             text_color=APP_COLORS["text_subtle"],
             font=app_font(10),
+            anchor="w",
+            justify="left",
+            wraplength=420,
         )
-        self.status_label.pack(side="left")
+        self.status_label.pack(fill="x", padx=12, pady=(0, 8))
+        composer.bind("<Configure>", lambda event: self.status_label.configure(
+            wraplength=max(180, event.width - 24)), add="+")
+        action_row = ctk.CTkFrame(composer, fg_color="transparent")
+        action_row.pack(fill="x", padx=12, pady=(0, 12))
         self.copy_button = ctk.CTkButton(
             action_row,
             text="Copiar resposta",

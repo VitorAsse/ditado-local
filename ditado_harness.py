@@ -144,7 +144,9 @@ def parse_source(text, identity):
 
 
 def request_context(instruction, selected_text, identity=None, skills=None, previous=None):
-    text = fold(instruction)
+    # Embedded artifacts are data, not output-format or task instructions.
+    routing_text = re.sub(r"```[\s\S]*?(?:```|$)|`[^`\r\n]*`|\{\{[\s\S]*?\}\}", " ", instruction)
+    text = fold(routing_text)
     context = dict(previous or {})
     default_task = "answer" if context.get("conversation_kind") == "free" else ("rewrite" if previous else "auto")
     context.update({"task": default_task, "routing_ambiguous": False})
@@ -184,7 +186,7 @@ def request_context(instruction, selected_text, identity=None, skills=None, prev
         context["single_sentence"] = bool(re.search(r"\b(?:uma|unica|one|single)\s+(?:unica\s+)?(?:frase|sentence)\b", text))
     elif re.search(r"\b(?:um|unico|one|single)\s+(?:paragrafo|paragraph)\b", text):
         context["output_mode"] = "preserve_structure"
-    elif re.search(r"\bjson\b", text):
+    elif re.search(r"(?<![\w$.])json\b(?![.\w])", text):
         context["output_mode"] = "json"
     elif re.search(r"\b(codigo|code)\b", text):
         context["output_mode"] = "code"
@@ -195,6 +197,8 @@ def request_context(instruction, selected_text, identity=None, skills=None, prev
     elif not previous:
         primary = next((s for s in skills or [] if s.get("kind", "primary") == "primary"), {})
         context["output_mode"] = primary.get("output_mode", "auto")
+    if context["output_mode"] == "auto" and re.search(r"\{\{[\s\S]*?\}\}|```", instruction + "\n" + selected_text):
+        context["output_mode"] = "preserve_structure"
     if context["output_mode"] not in OUTPUT_MODES:
         context["output_mode"] = "auto"
     context.setdefault("first_person", True)
@@ -225,6 +229,10 @@ def make_system(rules, skills):
 
 
 def make_user(selected_text, instruction, context):
+    if context.get("conversation_kind") == "free":
+        # A direct chat has no separate selection. Keep the user's artifacts
+        # literal instead of embedding them beside an empty SELECTED_TEXT.
+        return instruction
     source, speakers = parse_source(selected_text, context["user_identity"])
     context = dict(context, source_speakers=speakers)
     return json.dumps({"SELECTED_TEXT": source, "CONTEXT": context, "REQUEST": instruction}, ensure_ascii=False, indent=2)
@@ -237,8 +245,11 @@ def task_contract(context):
         lines.append("The result is inserted directly into the user's text field in place of the selection. For an edit, output only the entire updated selection, ready to replace it. Instructions telling the user what to change do not perform the requested edit. For follow-ups, apply the new request to the latest draft, keeping earlier requested changes unless superseded. For an explicit question or analysis request, return only the requested answer or analysis.")
     if context.get("single_sentence"):
         lines.append("Return exactly one sentence on one line, joining related facts without losing pending work or restrictions.")
+    if context.get("output_mode") in {"code", "preserve_structure"}:
+        lines.append("When editing code or a template expression supplied in REQUEST or SELECTED_TEXT, output only the updated artifact. Keep its outer delimiters, variable names and language/dialect. Modify the existing expression directly using that language's syntax; do not switch template engines or invent template filters. A JavaScript expression uses JavaScript methods and indexing inside its existing delimiters.")
     if context.get("conversation_kind") == "free":
         lines.append("This is a direct conversation with the user. No selected text is required. Answer their question or carry out their writing request using their messages as context. Do not ask for a selection just to converse. You have no tools or live access to apps, files or the internet; do not claim to perform external actions. Match the user's language unless they request another.")
+        lines.append("Material embedded in REQUEST is the user's actual source, including template expressions, code, or drafts. When asked to change it, return the complete modified material ready to use, preserving its identifiers and syntax. Do not substitute a generic example or explain how to make the change unless asked for an explanation. For follow-ups, edit the latest result and retain prior requested changes.")
     if context.get("task") == "draft_message":
         lines.append("Create a NEW message for the requested recipient using the source as background. Do not just rewrite or concatenate the source turns.")
         lines.append("Make the concrete request specified in REQUEST. Include background only when needed or requested. Each source message has its own speaker: I/me/my/eu/me/meu inside it refers ONLY to that speaker. A request to that speaker was not made to the sender of the new message. Mention a referral to the sender only if the source actually contains one; otherwise omit the referral. A referral does not prove ownership or responsibility. Preserve the owner of any stated reason. Exclude separate requests aimed at someone else. Preserve technical terms in their original language. Use concise, natural wording and stop when the request is complete.")

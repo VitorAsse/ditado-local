@@ -3,11 +3,33 @@ import unittest
 from unittest.mock import Mock, patch
 
 from ditado_ai import OllamaClient
-from ditado_harness import check_budget, output_budget
+from ditado_harness import check_budget, output_budget, request_context
 from test_long_context import response
 
 
 class AgentArtifactTests(unittest.TestCase):
+    def test_embedded_identifiers_do_not_request_json(self):
+        for source in ('{{ $json.body.answers.name }}', '{{ user.json.name }}', '`$json.name`', '$json.name'):
+            with self.subTest(source=source):
+                self.assertNotEqual('json', request_context(source + '\nPegue a primeira palavra', '')['output_mode'])
+                self.assertEqual('json', request_context(source + '\nRetorne em JSON', '')['output_mode'])
+
+    def test_free_template_edit_accepts_expression_without_json_repair(self):
+        client = OllamaClient()
+        expression = '{{ $json.body.answers.name.split(" ")[0] }}'
+        client.chat = Mock(return_value=expression)
+        client.chat_messages = Mock(side_effect=AssertionError('Unnecessary repair'))
+        result, conversation = client.start_free_conversation(
+            '{{ $json.body.answers.name }}\nFaz um split pra pegar a primeira palavra')
+        self.assertEqual(expression, result)
+        self.assertEqual('preserve_structure', conversation['harness']['context']['output_mode'])
+        self.assertFalse(client.last_diagnostics['repair_attempted'])
+        self.assertEqual('{{ $json.body.answers.name }}\nFaz um split pra pegar a primeira palavra',
+                         client.chat.call_args.args[1])
+        client.chat_messages = Mock(return_value=expression)
+        client.continue_selected_text_conversation(conversation, 'Mantenha o resultado')
+        self.assertEqual('Mantenha o resultado', client.chat_messages.call_args.args[0][-1]['content'])
+
     def test_informal_edit_preserves_raw_artifact_and_history(self):
         artifacts = [
             '  const key = "{{source - field}}";\n  const total = left - right;\n',

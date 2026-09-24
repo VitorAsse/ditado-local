@@ -4116,6 +4116,11 @@ class DitadoLocalApp:
             "O modo Agente precisa do Ollama",
         )
         safe_messages = (
+            "O agente não conseguiu cumprir o formato ou preservar os dados. Tente reformular o pedido; o resultado não foi colado.",
+            "O Ollama demorou demais para responder. Tente novamente.",
+            "O modelo local não retornou texto.",
+            "A resposta atingiu o limite do modelo. Peça um resultado menor; o texto incompleto não foi colado.",
+            "O contexto está longo demais para o agente local. Selecione um trecho menor ou inicie uma nova conversa; nenhum trecho foi cortado.",
             "Esta conversa não tem contexto válido para continuar.",
             "Digite o ajuste que o agente deve fazer.",
             "O ajuste está muito longo. Resuma o pedido antes de enviar.",

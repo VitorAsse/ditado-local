@@ -2,6 +2,18 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.10 - 2026-09-24
+
+- Identificadores como `$json` e conteúdo de expressões, código e templates
+  deixam de ser confundidos com instruções de formato JSON para a resposta.
+- Conversas livres preservam o pedido literal, inclusive em continuações,
+  com orientação para editar o material fornecido mantendo sua sintaxe.
+- Mensagens de erro com quebra de linha e espaço próprio, preservando os
+  botões de envio e cópia; falhas conhecidas mostram o motivo específico.
+- Testes de regressão para expressões, pedidos explícitos de JSON e continuação.
+- Sem migração de dados ou novas variáveis de ambiente. Validação visual final
+  da janela instalada pendente; geração real no Ollama e testes automatizados aprovados.
+
 ## 0.4.9 - 2026-09-23
 
 - Combinação de até quatro skills por pedido, incluindo tarefas e complementos,
