@@ -2,6 +2,22 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.9 - 2026-09-23
+
+- Combinação de até quatro skills por pedido, incluindo tarefas e complementos,
+  com teto de 8.000 caracteres nas instruções somadas e aviso antes da geração
+  quando um limite é excedido, sem cortes silenciosos.
+- Tarefas com gatilhos distintos podem trabalhar juntas; gatilhos sobrepostos
+  continuam exigindo escolha explícita. Ajustes complementares preservam as
+  skills da conversa, dentro do limite.
+- Biblioteca pública com 18 skills genéricas de automação, planilhas, código,
+  dados, comunicação, copy e inglês, adicionável pela aba Skills.
+- Importação atômica que preserva versões pessoais e skills pausadas, respeita
+  o limite de 30 por perfil e mantém a sincronização criptografada existente.
+- Guia de ativação incluído no pacote e checksum SHA-256 publicado com o ZIP.
+- Novas instalações continuam sem identidade ou contextos pessoais; nenhuma
+  migração de banco ou nova variável de ambiente é necessária.
+
 ## 0.4.8 - 2026-09-23
 
 - Corrigida a seleção de microfone após conectar ou desconectar dispositivos:

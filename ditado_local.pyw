@@ -65,7 +65,7 @@ from ditado_ai import (
     correction_prompt,
     transcription_vocabulary,
     normalize_agent_conversation,
-    select_voice_skill,
+    select_voice_skills,
 )
 from ditado_audio import PlaybackMuteController
 from ditado_chat import AgentChatWindow
@@ -1581,11 +1581,21 @@ class DitadoLocalApp:
             canvas,
             text=(
                 "Crie comportamentos reutilizáveis. Ative uma skill pelo nome "
-                "ou por uma frase cadastrada."
+                "ou por uma frase cadastrada. Combine até 4 skills por pedido."
             ),
             text_color="#9696A3",
             wraplength=650,
             justify="left",
+            font=app_font(size=11),
+        ).pack(anchor="w", padx=10)
+
+        ctk.CTkButton(
+            canvas, text="Adicionar skills padrão",
+            command=self._add_builtin_skills,
+        ).pack(anchor="w", padx=10, pady=(10, 3))
+        ctk.CTkLabel(
+            canvas, text="Adiciona as skills que faltam, sem substituir suas versões pessoais.",
+            text_color="#9696A3", wraplength=650, justify="left",
             font=app_font(size=11),
         ).pack(anchor="w", padx=10)
 
@@ -2462,6 +2472,18 @@ class DitadoLocalApp:
         if active == 1:
             return "1 skill ativa para ativação por nome ou frase."
         return f"{active} skills ativas de {total} cadastradas."
+
+    def _add_builtin_skills(self):
+        try:
+            added = self.config.add_builtin_skills()
+        except (ValueError, OSError) as error:
+            self.status.set(str(error))
+            return
+        self._rebuild_skills()
+        if added:
+            self._sync_after_local_change(f"{added} skills padrão adicionadas.")
+        else:
+            self.status.set("As skills padrão já estão no perfil. Suas versões foram preservadas.")
 
     def _save_skill(self):
         triggers = [
@@ -3564,10 +3586,11 @@ class DitadoLocalApp:
                     )
                 rules = self.config.get_rules(enabled_only=True)
                 skills = self.config.get_skills(enabled_only=True)
-                selected_skill = select_voice_skill(spoken_text, skills)
-                if selected_skill:
+                selected_skills = select_voice_skills(spoken_text, skills)
+                if selected_skills:
                     pipeline_subtitle = (
-                        f"Skill: {selected_skill.get('name', 'ativa')}"
+                        f"Skills ({len(selected_skills)}/4): "
+                        + ", ".join(s.get("name", "ativa") for s in selected_skills)
                     )
                 elif skills:
                     pipeline_subtitle = (
@@ -3590,7 +3613,6 @@ class DitadoLocalApp:
                         self.agent_selected_text,
                         spoken_text,
                         skills=skills,
-                        selected_skill=selected_skill,
                         rules=rules,
                         user_identity=self.config.get("user_identity", {}),
                     )

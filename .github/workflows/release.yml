@@ -6,7 +6,7 @@ on:
       version:
         description: Version without the v prefix
         required: true
-        default: 0.4.8
+        default: 0.4.9
 
 permissions:
   contents: write
@@ -30,7 +30,7 @@ jobs:
 
       - name: Verify
         run: |
-          python -m py_compile ditado_ai.py ditado_harness.py ditado_audio.py ditado_chat.py ditado_cloud.py ditado_desktop.py ditado_hotkey.py ditado_notification.py ditado_quick_correction.py ditado_local.pyw ditado_ollama.py ditado_storage.py ditado_theme.py
+          python -m py_compile ditado_ai.py ditado_harness.py ditado_audio.py ditado_chat.py ditado_cloud.py ditado_desktop.py ditado_hotkey.py ditado_notification.py ditado_quick_correction.py ditado_local.pyw ditado_ollama.py ditado_storage.py ditado_skill_catalog.py ditado_theme.py
           python -m unittest discover -v
 
       - name: Package
@@ -45,6 +45,7 @@ jobs:
         run: |
           gh release create "v${{ inputs.version }}" `
             "release\DitadoLocal-${{ inputs.version }}.zip" `
+            "release\DitadoLocal-${{ inputs.version }}.zip.sha256" `
             --target "${{ github.sha }}" `
             --title "Ditado Local ${{ inputs.version }}" `
             --generate-notes

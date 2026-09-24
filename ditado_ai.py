@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 from ditado_harness import (
     BASE_SYSTEM_PROMPT, HARNESS_VERSION, CONTEXT_TOKENS, MAX_CONTEXT_TOKENS, OUTPUT_TOKENS,
     REPAIR_INSTRUCTION, active_skills, check_budget, output_budget, make_system, make_user,
-    normalize_identity, output_issues, request_context, route_skills,
+    normalize_identity, output_issues, request_context, route_skills, validate_active_skills,
     task_contract, format_paragraphs,
     source_language_hint, NATURAL_PUNCTUATION_RULE, normalize_prose_punctuation,
 )
@@ -266,8 +266,12 @@ def _extract_grammar_candidate(response):
 
 
 def select_voice_skill(instruction, skills):
-    selected = active_skills(route_skills(instruction, skills))
+    selected = select_voice_skills(instruction, skills)
     return selected[0] if selected else None
+
+
+def select_voice_skills(instruction, skills):
+    return active_skills(route_skills(instruction, skills))
 
 
 def _skill_block(skill):
@@ -696,9 +700,9 @@ class OllamaClient:
         route = route_skills(follow_up, skills if skills is not None else saved.get("skills", []))
         if route["matched"]:
             selected = active_skills(route)
-            # A style-only follow-up modifies the active task instead of discarding it.
+            # A complementary follow-up preserves the active task AND context.
             if not route["primary"] and not route["ambiguous"]:
-                selected = [s for s in saved.get("skills", []) if s.get("kind", "primary") == "primary"] + selected
+                selected = saved.get("skills", []) + selected
         else:
             selected = saved.get("skills", [])
         if skills is not None:
@@ -706,6 +710,7 @@ class OllamaClient:
             registry = {s.get("id") or s.get("name"): s for s in skills if s.get("enabled", True)}
             selected = [registry[s.get("id") or s.get("name")] for s in selected
                         if (s.get("id") or s.get("name")) in registry]
+        selected = validate_active_skills(selected)
         current_rules = rules if rules is not None else saved.get("rules")
         if current_rules is None:
             current_rules = ([{"name": "Preferências salvas", "instructions": normalized["rules_context"]}]

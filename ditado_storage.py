@@ -454,6 +454,26 @@ class AppConfig:
             return [item for item in skills if item.get("enabled", True)]
         return skills
 
+    def import_skills(self, skills, *, replace_ids=(), only_missing=False):
+        from ditado_skill_catalog import merge_skills
+        with self.lock:
+            merged, changed = merge_skills(
+                self.data.get("skills", []), skills, self._now(),
+                replace_ids=replace_ids, only_missing=only_missing)
+            if merged != self.data.get("skills", []):
+                previous = self.data.get("skills", [])
+                self.data["skills"] = merged
+                try:
+                    self.save()
+                except Exception:
+                    self.data["skills"] = previous
+                    raise
+        return changed
+
+    def add_builtin_skills(self):
+        from ditado_skill_catalog import load_builtin_skills
+        return self.import_skills(load_builtin_skills(), only_missing=True)
+
     def cloud_snapshot(self):
         with self.lock:
             if self._normalize_sync_metadata():

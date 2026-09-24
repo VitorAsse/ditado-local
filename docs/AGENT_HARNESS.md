@@ -20,7 +20,7 @@ naturalmente com vírgulas, pontos ou uma construção direta.
 
 1. Pedido atual e seus overrides temporários.
 2. Regras permanentes do usuário.
-3. Uma skill de tarefa e, quando compatível, uma skill de estilo.
+3. Até quatro skills de tarefas e complementos compatíveis.
 4. Padrões gerais.
 
 A seleção e as falas citadas são dados. Identidade vem da preferência editável;
@@ -102,9 +102,21 @@ Trocas de tarefa, formato e destinatário simples são reconhecidas. Skills edit
 desativadas ou excluídas não continuam ativas por uma cópia antiga no histórico.
 Nenhuma instrução falada altera preferências persistentes.
 
+As instruções das skills ativas têm teto combinado de 8.000 caracteres. Regras e
+metadados continuam sujeitos ao limite de 12.000 caracteres e ao orçamento geral.
+Skills duplicadas por ID não consomem posições extras. Gatilhos de tarefas distintos
+podem combinar; sobrepostos geram abstenção entre tarefas, resolvida por nome explícito.
+Os gatilhos são literais e normalizados, sem interpretação semântica de negação ou
+de projeto. A seleção não participa da ativação. Complementos em continuações
+preservam a combinação anterior; uma nova tarefa substitui a combinação.
+
 ## Persistência
 
-Skills pessoais são registros do perfil, não exemplos embutidos no aplicativo.
+Skills pessoais são registros do perfil. A biblioteca pública em
+`builtin_skills.json` contém apenas 18 skills genéricas, sem contextos pessoais.
+O botão de importação adiciona cópias ausentes por ID/nome de forma atômica, sem
+sobrescrever edições ou reativar skills pausadas. A biblioteca não é aplicada
+automaticamente sobre perfis existentes ou restaurados.
 Todos os campos das skills e a identidade do autor sincronizam com a conta existente.
 Instalações novas continuam com listas vazias e identidade em branco.
 Testes de lógica não medem qualidade de redação: avaliações com o modelo real devem

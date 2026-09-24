@@ -309,6 +309,23 @@ class CloudSyncTests(unittest.TestCase):
         self.assertTrue(second_rows)
         self.assertFalse(set(first_rows) & set(second_rows))
 
+    def test_builtin_and_personal_skill_versions_restore_without_overwrite(self):
+        first, config, _, _ = self._manager("catalog-first")
+        config.add_builtin_skills()
+        entry = config.get_skills()[0]
+        config.save_skill(entry["id"], entry["name"], entry["description"],
+                          ["minha frase"], "Minha versão pessoal.", [],
+                          kind=entry["kind"], output_mode="auto")
+        config.set_skill_enabled(entry["id"], False)
+        recovery = first.sync_once()["recovery_code"]
+        second, restored, _, _ = self._manager("catalog-second")
+        second.sync_once(recovery_code=recovery)
+        expected = {s["id"]: s for s in config.get_skills()}
+        self.assertEqual(expected, {s["id"]: s for s in restored.get_skills()})
+        self.assertEqual(0, restored.add_builtin_skills())
+        self.assertEqual(expected, {s["id"]: s for s in restored.get_skills()})
+        self.assertNotIn("Minha versão pessoal.", json.dumps(list(self.backend.sync_items.values())))
+
     def test_skill_rule_and_agent_context_round_trip_with_edits_and_deletion(self):
         first, config, history, _ = self._manager("skill-first")
         skill_id = config.save_skill(None, "Resumo", "Resumir uma conversa",

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.4.8"
+    [string]$Version = "0.4.9"
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,6 +62,8 @@ $packageFiles = @(
     "ditado_local.pyw",
     "ditado_ollama.py",
     "ditado_storage.py",
+    "ditado_skill_catalog.py",
+    "builtin_skills.json",
     "ditado_theme.py",
     "install.ps1",
     "launch_ditado.vbs",
@@ -91,7 +93,7 @@ Copy-Item `
 $docsSource = Join-Path $repositoryRoot "docs"
 $docsDestination = Join-Path $stagingRoot "docs"
 New-Item -ItemType Directory -Path $docsDestination -Force | Out-Null
-foreach ($documentName in @("CLOUD_SYNC.md", "AGENT_HARNESS.md")) {
+foreach ($documentName in @("CLOUD_SYNC.md", "AGENT_HARNESS.md", "SKILLS.md")) {
     $documentSource = Join-Path $docsSource $documentName
     if (-not (Test-Path -LiteralPath $documentSource)) {
         throw "Documentacao obrigatoria ausente: docs\$documentName"
@@ -155,4 +157,10 @@ Copy-Item `
     -Destination (Join-Path $fontsDestination "OFL.txt")
 
 Compress-Archive -LiteralPath $stagingRoot -DestinationPath $archivePath
+$checksum = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+[System.IO.File]::WriteAllText(
+    "$archivePath.sha256",
+    "$checksum  $packageName.zip" + [Environment]::NewLine,
+    [System.Text.Encoding]::ASCII
+)
 Write-Output $archivePath

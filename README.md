@@ -194,14 +194,34 @@ Use regras apenas para preferências que devem valer em todas as conversas.
 
 ### Skills
 
+A aba Skills inclui **Adicionar skills padrão**, uma biblioteca de 18 tarefas e
+complementos genéricos distribuída com o aplicativo: planilhas, n8n, cron, código,
+JSON, regex, HTTP/cURL, Git, prompts, listas, comunicação, copy e inglês.
+A adição é opcional e respeita o limite de 30 skills por perfil. O botão só adiciona
+IDs e nomes ausentes: não substitui versões pessoais, não reativa skills pausadas
+e não atualiza instruções já importadas. Se faltar espaço, nada é importado.
+Cada cópia pode ser editada, pausada ou excluída normalmente e sincroniza criptografada
+na conta conectada. Atualizar o aplicativo não sobrescreve as cópias no perfil.
+Contextos de empresas e instruções pessoais não fazem parte da biblioteca pública.
+
 Skills são comportamentos ativados por nome ou frase. Use quando uma regra não deve
 ser aplicada o tempo todo, como formatação de resumo semanal ou resposta profissional.
 Sem um gatilho correspondente, nenhuma skill é adicionada ao agente generalista.
-Uma skill de tarefa pode combinar com uma de estilo. Quando duas tarefas correspondem
-ao pedido, o agente usa o comportamento geral; diga `Use a skill <nome>` para escolher.
+Até quatro skills podem ser carregadas por pedido, incluindo tarefas e complementos
+de contexto ou estilo. Gatilhos distintos podem combinar várias tarefas. Quando tarefas
+disputam o mesmo trecho do pedido, o agente não escolhe entre elas; diga
+`Use a skill <nome>` para escolher, ou nomeie explicitamente as skills desejadas.
+O limite é de quatro skills e 8.000 caracteres nas instruções somadas; excesso gera
+um aviso antes da geração, sem cortar instruções. As regras e metadados continuam
+sujeitos ao limite combinado de 12.000 caracteres e ao orçamento geral do modelo.
+Gatilhos são reconhecidos no pedido, não no texto selecionado; não há identificação
+semântica de projeto nem resolução automática de instruções contraditórias.
 Tipo, formato padrão, instruções e gatilhos podem ser editados na aba Skills e são
 sincronizados. Em uma continuação, a tarefa ativa é mantida até outra ser solicitada;
-editar, pausar ou excluir uma skill é respeitado no próximo turno.
+editar, pausar ou excluir uma skill é respeitado no próximo turno. Pedir apenas um
+complemento preserva as skills anteriores, respeitando o teto de quatro; solicitar
+uma nova tarefa substitui a combinação. Para remover complementos acumulados,
+inicie uma nova conversa ou solicite a tarefa e os complementos desejados novamente.
 
 ### Nuvem e múltiplas contas
 

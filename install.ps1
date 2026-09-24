@@ -96,6 +96,8 @@ $applicationFiles = @(
     "ditado_local.pyw",
     "ditado_ollama.py",
     "ditado_storage.py",
+    "ditado_skill_catalog.py",
+    "builtin_skills.json",
     "ditado_theme.py",
     "launch_ditado.vbs",
     "launch_ditado_background.vbs",
