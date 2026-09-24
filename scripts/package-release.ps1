@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.4.7"
+    [string]$Version = "0.4.8"
 )
 
 $ErrorActionPreference = "Stop"

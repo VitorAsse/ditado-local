@@ -305,8 +305,53 @@ class RecordingRecoveryTests(unittest.TestCase):
 
         self.assertEqual(refreshed_device, device)
         self.assertIs(recovered_stream, stream)
-        app._refresh_audio_devices.assert_called_once_with()
+        self.assertEqual(2, app._refresh_audio_devices.call_count)
         self.assertEqual(2, app._start_input_stream.call_count)
+
+    def test_hotplug_does_not_open_bluetooth_microphone_at_old_webcam_index(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.config = Mock()
+        app.config.get.return_value = "Viva voz (Brio 300)"
+        app.microphone = Mock()
+        app.microphone.get.return_value = "1: Viva voz (Brio 300)"
+        app.microphone.set.side_effect = lambda label: setattr(
+            app.microphone.get, "return_value", label
+        )
+        app.input_devices = [
+            {"index": 1, "name": "Viva voz (Brio 300)", "sample_rate": 48000}
+        ]
+        fresh_devices = [
+            {"index": 1, "name": "Microfone do Headset", "sample_rate": 16000},
+            {"index": 2, "name": "Viva voz (Brio 300)", "sample_rate": 48000},
+        ]
+        app._get_input_devices = Mock(return_value=fresh_devices)
+        app._start_input_stream = Mock(return_value=object())
+        with patch.object(DITADO_LOCAL, "sd") as audio:
+            device, _stream = app._open_input_stream_with_recovery()
+        self.assertEqual(2, device["index"])
+        app._start_input_stream.assert_called_once_with(fresh_devices[1])
+        audio._terminate.assert_called_once_with()
+        audio._initialize.assert_called_once_with()
+        app.config.set.assert_not_called()
+
+    def test_missing_saved_microphone_never_falls_back_to_bluetooth(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.config = Mock()
+        app.config.get.return_value = "Viva voz (Brio 300)"
+        app.microphone = Mock()
+        app.microphone.set.side_effect = lambda label: setattr(
+            app.microphone.get, "return_value", label
+        )
+        app._get_input_devices = Mock(return_value=[
+            {"index": 1, "name": "Microfone do Headset", "sample_rate": 16000}
+        ])
+        app._start_input_stream = Mock()
+        with patch.object(DITADO_LOCAL, "sd"), self.assertRaisesRegex(
+            RuntimeError, "Reconecte-o"
+        ):
+            app._open_input_stream_with_recovery()
+        app._start_input_stream.assert_not_called()
+        app.config.set.assert_not_called()
 
 
 class ModelRuntimeTests(unittest.TestCase):

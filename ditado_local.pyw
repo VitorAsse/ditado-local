@@ -1980,6 +1980,9 @@ class DitadoLocalApp:
                 (device for device in self.input_devices if device["name"] == saved_name),
                 None,
             )
+            if selected is None:
+                self.microphone.set(f"Indisponível: {saved_name}")
+                return
         if selected is None and self.input_devices:
             selected = self.input_devices[0]
         if selected:
@@ -1991,11 +1994,12 @@ class DitadoLocalApp:
         selection = self.microphone.get()
         if not selection or not self.input_devices:
             raise RuntimeError("Selecione um microfone antes de gravar.")
-        device_index = int(selection.split(":", 1)[0])
         for device in self.input_devices:
-            if device["index"] == device_index:
+            if self._device_label(device) == selection:
                 return device
-        raise RuntimeError("O microfone selecionado não está disponível.")
+        raise RuntimeError(
+            "O microfone selecionado não está disponível. Reconecte-o ou escolha outro microfone."
+        )
 
     def _refresh_audio_devices(self):
         sd.stop()
@@ -2031,6 +2035,10 @@ class DitadoLocalApp:
         return stream
 
     def _open_input_stream_with_recovery(self):
+        # PortAudio caches indices: after hotplug an old index can successfully
+        # open a different microphone (including a Bluetooth hands-free input).
+        # Re-enumerate and resolve the saved name before opening any stream.
+        self._refresh_audio_devices()
         device = self._selected_device()
         try:
             return device, self._start_input_stream(device)

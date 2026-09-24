@@ -2,6 +2,16 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.8 - 2026-09-23
+
+- Corrigida a seleção de microfone após conectar ou desconectar dispositivos:
+  a lista de áudio é atualizada antes de gravar, preservando o microfone escolhido.
+- Evita abrir o microfone Bluetooth no lugar da webcam por reutilização de índice,
+  situação que podia alterar a qualidade da música durante a gravação.
+- Microfone salvo indisponível agora gera aviso, sem trocar automaticamente para
+  outro dispositivo nem sobrescrever a preferência.
+- Testes de regressão para mudanças na lista de dispositivos e microfone ausente.
+
 ## 0.4.7 - 2026-09-22
 
 - Sincronização criptografada das 16 preferências, incluindo microfone, inicialização,
