@@ -2,6 +2,16 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.11 - 2026-09-24
+
+- Mensagens do usuário e do agente permitem selecionar trechos com o mouse
+  e copiá-los com Ctrl+C, mantendo o conteúdo protegido contra edição.
+- Altura das mensagens acompanha a quebra de linha e a largura da janela;
+  a roda do mouse continua rolando a conversa. Copiar resposta mantém a cópia integral.
+- Teste de seleção parcial, cópia e proteção contra edição nos dois tipos de mensagem.
+- Sem migrações ou novas variáveis de ambiente. Arraste real com o mouse ainda
+  não validado: controle visual interrompido pelo usuário.
+
 ## 0.4.10 - 2026-09-24
 
 - Identificadores como `$json` e conteúdo de expressões, código e templates

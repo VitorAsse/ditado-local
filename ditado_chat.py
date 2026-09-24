@@ -1,4 +1,5 @@
 import customtkinter as ctk
+import tkinter as tk
 
 from ditado_ai import normalize_agent_conversation
 from ditado_theme import APP_COLORS, app_font
@@ -191,7 +192,7 @@ class AgentChatWindow:
             bubble.pack(
                 side="right" if is_user else "left",
                 fill="x",
-                expand=False,
+                expand=True,
                 padx=(72, 0) if is_user else (0, 72),
             )
             ctk.CTkLabel(
@@ -204,21 +205,50 @@ class AgentChatWindow:
                 ),
                 font=app_font(10, "bold"),
             ).pack(anchor="w", padx=12, pady=(9, 2))
-            ctk.CTkLabel(
-                bubble,
-                text=message["content"],
-                text_color=APP_COLORS["text"],
-                justify="left",
-                anchor="w",
-                wraplength=420,
-                font=app_font(12),
-            ).pack(anchor="w", padx=12, pady=(0, 10))
+            self._message_text(bubble, message["content"])
         self.messages_frame.after(
             60,
             lambda: self.messages_frame._parent_canvas.yview_moveto(1.0)
             if self.is_open()
             else None,
         )
+
+    def _message_text(self, bubble, content):
+        text = tk.Text(
+            bubble, width=1, height=1, wrap="word", font=app_font(12),
+            background=bubble._apply_appearance_mode(bubble.cget("fg_color")),
+            foreground=bubble._apply_appearance_mode(APP_COLORS["text"]),
+            selectbackground=bubble._apply_appearance_mode(APP_COLORS["primary"]),
+            selectforeground="white", borderwidth=0, highlightthickness=0,
+            padx=0, pady=0, cursor="xterm", exportselection=False,
+        )
+        text.insert("1.0", content)
+        text.configure(state="disabled")
+        text.pack(fill="x", padx=12, pady=(0, 10))
+
+        def resize(_event=None):
+            lines = text.count("1.0", "end", "displaylines")
+            height = max(1, lines[0] if lines else 1)
+            if int(text.cget("height")) != height:
+                text.configure(height=height)
+
+        def copy_selection(_event=None):
+            if text.tag_ranges("sel"):
+                self.on_copy(text.get("sel.first", "sel.last"))
+            return "break"
+
+        def scroll(event):
+            self.messages_frame._parent_canvas.yview_scroll(
+                -int(event.delta / 120) if abs(event.delta) >= 120 else (-1 if event.delta > 0 else 1),
+                "units")
+            return "break"
+
+        text.bind("<Configure>", resize)
+        text.bind("<<Copy>>", copy_selection)
+        text.bind("<Control-c>", copy_selection)
+        text.bind("<MouseWheel>", scroll)
+        text.after_idle(resize)
+        return text
 
     def _submit_from_event(self, _event):
         self.submit()

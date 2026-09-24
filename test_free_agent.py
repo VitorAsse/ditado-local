@@ -12,6 +12,33 @@ from test_ditado_local import DITADO_LOCAL as ui, destroy_test_root
 
 
 class FreeAgentTests(unittest.TestCase):
+    def test_message_selection_copies_only_selected_text_and_cannot_edit(self):
+        import tkinter as tk
+        root = ui.ctk.CTk()
+        copied = Mock()
+        _, _, conversation = self.conversation()
+        chat = ui.AgentChatWindow(root, conversation, Mock(), copied)
+        try:
+            root.update()
+            def descendants(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+            texts = [w for w in descendants(chat.messages_frame) if isinstance(w, tk.Text)]
+            self.assertEqual(2, len(texts))
+            for text in texts:
+                original = text.get('1.0', 'end-1c')
+                text.tag_add('sel', '1.0', '1.4')
+                text.event_generate('<<Copy>>')
+                copied.assert_called_with(original[:4])
+                text.insert('1.0', 'INVALID')
+                text.delete('1.0', 'end')
+                self.assertEqual(original, text.get('1.0', 'end-1c'))
+                self.assertGreater(text.winfo_height(), 1)
+        finally:
+            chat.close()
+            destroy_test_root(root)
+
     def test_greeting_and_general_knowledge_are_not_rejected_as_transformations(self):
         client = OllamaClient()
         client.chat = Mock(return_value='Olá!')
