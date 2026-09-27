@@ -3972,7 +3972,8 @@ class DitadoLocalApp:
         if self.agent_chat_profile_path != str(self.history.path):
             chat.show_error("A conta mudou. Abra uma nova conversa para continuar.")
             return
-        self._send_agent_chat_follow_up(self.agent_chat_entry_id, chat.conversation, instruction)
+        self._send_agent_chat_follow_up(self.agent_chat_entry_id, chat.conversation, instruction,
+                                       attachment_paths=list(chat.attachment_paths))
 
     def _toggle_chat_recording(self, chat):
         if self.agent_chat_window is not chat or not chat.is_open() or chat.loading:
@@ -4016,7 +4017,7 @@ class DitadoLocalApp:
             return
         self._open_agent_chat(entry)
 
-    def _send_agent_chat_follow_up(self, entry_id, conversation, instruction):
+    def _send_agent_chat_follow_up(self, entry_id, conversation, instruction, attachment_paths=None):
         profile_path = str(self.history.path)
         options = dict(skills=self.config.get_skills(enabled_only=True),
                        rules=self.config.get_rules(enabled_only=True),
@@ -4024,6 +4025,9 @@ class DitadoLocalApp:
         corrections = self.config.get("corrections", [])
         def run_follow_up():
             try:
+                if attachment_paths:
+                    from ditado_attachments import read_attachment, normalize_attachments
+                    options["attachments"] = normalize_attachments([read_attachment(p) for p in attachment_paths])
                 if conversation is None:
                     result, updated = self.ollama.start_free_conversation(instruction, **options)
                 else:

@@ -86,6 +86,7 @@ if ($EnableGpu) {
 $applicationFiles = @(
     "ditado_ai.py",
     "ditado_harness.py",
+    "ditado_attachments.py",
     "ditado_audio.py",
     "ditado_chat.py",
     "ditado_desktop.py",

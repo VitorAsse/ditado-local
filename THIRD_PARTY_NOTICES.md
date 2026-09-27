@@ -32,6 +32,7 @@ nos próprios wheels. O instalador preserva esses textos junto às DLLs em `gpu-
 | httpx | 0.28.1 | BSD-3-Clause |
 | numpy | 2.4.6 | BSD-3-Clause e componentes compatíveis |
 | Pillow | 12.3.0 | MIT-CMU |
+| pypdfium2 | 5.13.0 | BSD-3-Clause, Apache-2.0 e licenças das dependências PDFium incluídas no wheel |
 | pycaw | 20251023 | MIT |
 | pynput | 1.8.2 | LGPL-3.0 |
 | pyperclip | 1.11.0 | BSD |

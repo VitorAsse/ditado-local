@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from difflib import SequenceMatcher
+from ditado_attachments import normalize_attachments, attachment_message, MAX_IMAGE_DATA
 from ditado_harness import (
     BASE_SYSTEM_PROMPT, HARNESS_VERSION, CONTEXT_TOKENS, MAX_CONTEXT_TOKENS, OUTPUT_TOKENS,
     REPAIR_INSTRUCTION, active_skills, check_budget, output_budget, make_system, make_user,
@@ -365,6 +366,13 @@ def normalize_agent_conversation(value):
         normalized_messages.append(
             {"role": expected_role, "content": content}
         )
+        if message.get("attachments"):
+            if expected_role != "user":
+                return None
+            try:
+                normalized_messages[-1]["attachments"] = normalize_attachments(message["attachments"])
+            except ValueError:
+                return None
         expected_role = "assistant" if expected_role == "user" else "user"
 
     if normalized_messages[-1]["role"] != "assistant":
@@ -394,6 +402,10 @@ def normalize_agent_conversation(value):
     )
     if total_characters > MAX_CONVERSATION_TOTAL_CHARS:
         return None
+    attachment_text = sum(len(a["text"]) for m in normalized_messages for a in m.get("attachments", []))
+    image_data = sum(len(i) for m in normalized_messages for a in m.get("attachments", []) for i in a["images"])
+    if total_characters + attachment_text > MAX_CONVERSATION_TOTAL_CHARS or image_data > MAX_IMAGE_DATA:
+        return None
 
     return {
         **({"kind": "free"} if free_chat else {}),
@@ -421,6 +433,7 @@ class OllamaClient:
         self.url = url
         self.keep_alive = keep_alive
         self._model_context_capacity = None
+        self._vision_verified = False
         self.last_call_metrics = {}
 
     def _context_size(self, messages):
@@ -462,9 +475,26 @@ class OllamaClient:
             normalized_messages.append(
                 {"role": role, "content": content}
             )
+            if message.get("images"):
+                checked = normalize_attachments([{"name": "images", "images": message["images"]}])
+                normalized_messages[-1]["images"] = checked[0]["images"]
         if not normalized_messages:
             raise ValueError("A conversa precisa ter pelo menos uma mensagem.")
 
+        image_count = sum(len(m.get("images", [])) for m in normalized_messages)
+        if image_count:
+            if image_count > 8:
+                raise ValueError("A conversa excede oito imagens/páginas. Inicie outra conversa.")
+            if not self._vision_verified:
+                request = urllib.request.Request(self.url.rsplit("/", 1)[0] + "/show",
+                    data=json.dumps({"model": self.model}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    capabilities = json.loads(response.read()).get("capabilities", [])
+                if "vision" not in capabilities:
+                    raise ValueError("O modelo selecionado não lê imagens. Escolha um modelo com visão; os anexos não foram enviados.")
+                self._vision_verified = True
+            timeout = max(timeout, 300)
         context_size = self._context_size(normalized_messages)
         if context_size > CONTEXT_TOKENS:
             timeout = max(timeout, 300)
@@ -583,10 +613,12 @@ class OllamaClient:
         )
         return result
 
-    def _generate_checked(self, system, user, context, source, instruction, history=None):
+    def _generate_checked(self, system, user, context, source, instruction, history=None, attachments=None):
+        if attachments or any(m.get("attachments") for m in history or []):
+            context = dict(context, has_attachments=True)
         system += task_contract(context)
-        messages = [{"role": "system", "content": system}] + list(history or []) + [
-            {"role": "user", "content": user}]
+        messages = [{"role": "system", "content": system}] + [attachment_message(m) for m in history or []] + [
+            attachment_message({"role": "user", "content": user, "attachments": attachments or []})]
         bound = check_budget(messages)
         self.last_diagnostics = {"harness_version": HARNESS_VERSION,
                                  "input_token_upper_bound": bound,
@@ -595,7 +627,7 @@ class OllamaClient:
                                  "repair_attempted": False}
         # Draft from the original evidence. A preliminary prose summary both added
         # latency and promoted the small model's inferences into the final source.
-        result = self.chat_messages(messages) if history else self.chat(system, user)
+        result = self.chat_messages(messages) if history or attachments else self.chat(system, user)
         result = format_paragraphs(normalize_prose_punctuation(result, context), context)
         reference = source + "\n" + "\n".join(m["content"] for m in history or [] if m["role"] == "user")
         issues = output_issues(result, context, reference, instruction)
@@ -613,6 +645,8 @@ class OllamaClient:
             # drafting history causes small models to reproduce the same role error.
             repair_messages = [{"role": "system", "content": REPAIR_INSTRUCTION}] + [
                 {"role": "user", "content": repair_user}]
+            evidence = [m for m in messages if m.get("images") or "ATTACHMENTS (" in m["content"]]
+            repair_messages[1:1] = evidence
             check_budget(repair_messages)
             self.last_diagnostics["repair_attempted"] = True
             result = self.chat_messages(repair_messages)
@@ -638,14 +672,15 @@ class OllamaClient:
                 raise RuntimeError("O agente não conseguiu cumprir o formato ou preservar os dados. Tente reformular o pedido; o resultado não foi colado.")
         return result if context.get("output_mode") in {"auto", "preserve_structure", "code"} else result.strip()
 
-    def start_free_conversation(self, instruction, skills=None, rules=None, user_identity=None):
+    def start_free_conversation(self, instruction, skills=None, rules=None, user_identity=None, attachments=None):
         return self.start_selected_text_conversation(
             "", instruction, skills=skills, rules=rules, user_identity=user_identity,
-            conversation_kind="free")
+            conversation_kind="free", attachments=attachments)
 
     def start_selected_text_conversation(self, selected_text, instruction, skills=None,
                                          selected_skill=None, rules=None, user_identity=None,
-                                         conversation_kind="selection"):
+                                         conversation_kind="selection", attachments=None):
+        attachments = normalize_attachments(attachments or [])
         if not isinstance(selected_text, str) or (not selected_text.strip() and conversation_kind != "free"):
             raise ValueError("Selecione um texto para iniciar uma conversa com o agente.")
         if not isinstance(instruction, str) or not instruction.strip():
@@ -668,14 +703,14 @@ class OllamaClient:
         context["routing_ambiguous"] = route["ambiguous"]
         system = make_system(rules, selected)
         user = make_user(selected_text, instruction, context)
-        result = self._generate_checked(system, user, context, selected_text, instruction)
+        result = self._generate_checked(system, user, context, selected_text, instruction, attachments=attachments)
         conversation = normalize_agent_conversation({
             **({"kind": "free"} if conversation_kind == "free" else {}),
             "version": AGENT_CONVERSATION_VERSION, "original_text": selected_text,
             "system_prompt": system, "rules_context": build_rules_context(rules),
             "harness": {"version": HARNESS_VERSION, "context": context,
                         "rules": rules, "skills": selected},
-            "messages": [{"role": "user", "content": instruction},
+            "messages": [{"role": "user", "content": instruction, **({"attachments": attachments} if attachments else {})},
                          {"role": "assistant", "content": result}],
         })
         if conversation is None:
@@ -683,7 +718,8 @@ class OllamaClient:
         return result, conversation
 
     def continue_selected_text_conversation(self, conversation, instruction, *,
-                                           skills=None, rules=None, user_identity=None):
+                                           skills=None, rules=None, user_identity=None, attachments=None):
+        attachments = normalize_attachments(attachments or [])
         normalized = normalize_agent_conversation(conversation)
         if normalized is None:
             raise ValueError("Esta conversa não tem contexto válido para continuar.")
@@ -725,12 +761,12 @@ class OllamaClient:
         history[0]["content"] = make_user(source, history[0]["content"], previous)
         user = (follow_up if context.get("conversation_kind") == "free" else
                 json.dumps({"REQUEST": follow_up, "CONTEXT": context}, ensure_ascii=False))
-        result = self._generate_checked(system, user, context, source, follow_up, history)
+        result = self._generate_checked(system, user, context, source, follow_up, history, attachments=attachments)
         updated = dict(normalized, system_prompt=system, rules_context=build_rules_context(current_rules))
         updated["harness"] = {"version": HARNESS_VERSION, "context": context,
                               "rules": current_rules, "skills": selected}
         updated["messages"] = normalized["messages"] + [
-            {"role": "user", "content": follow_up}, {"role": "assistant", "content": result}]
+            {"role": "user", "content": follow_up, **({"attachments": attachments} if attachments else {})}, {"role": "assistant", "content": result}]
         updated = normalize_agent_conversation(updated)
         if updated is None:
             raise RuntimeError("A conversa atingiu o limite local. Inicie uma nova transformação.")

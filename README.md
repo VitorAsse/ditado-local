@@ -14,12 +14,31 @@ Faster Whisper e Ollama.
 - Crie regras permanentes para preferências que devem valer em todas as ações.
 - Crie skills acionadas por nome ou frase para fluxos específicos.
 - Continue respostas do agente em um mini chat aberto pela aba `Histórico`.
+- Anexe imagens, PDFs, DOCX e textos no modo agente pelo botão **Anexar**.
+- Revise textos em português ou inglês preservando o idioma do rascunho; peça explicitamente quando quiser traduzir.
 - Use CPU automaticamente quando a aceleração por GPU não estiver disponível.
 - Mantenha um histórico local protegido pela conta atual do Windows.
 - Sincronize opcionalmente correções, regras, skills e histórico entre PCs, com
   contas separadas e criptografia ponta a ponta.
 
 Novas instalações não recebem regras, termos ou preferências pessoais do autor.
+
+No agente, **Anexar** aceita até quatro arquivos por mensagem (20 MB por arquivo):
+PNG, JPEG, WebP, BMP, PDF, DOCX e texto UTF-8/UTF-16, incluindo TXT, Markdown,
+CSV, JSON e código. São até oito imagens/páginas e 24.000 caracteres extraídos por
+mensagem, sujeitos ao limite de contexto; a conversa inteira aceita até oito
+imagens/páginas e 12 MB de imagens codificadas. PDF é lido como texto e imagem de cada
+página, inclusive quando escaneado; exige modelo com visão. Imagens são ajustadas
+a até 2.048 pixels no maior lado; envie um recorte se os detalhes forem pequenos.
+DOCX preserva texto, tabelas como parágrafos e imagens; gráficos/objetos incorporados
+exigem exportação para PDF. Formatos, codificações ou tamanhos incompatíveis dão erro
+sem envio parcial ou corte silencioso. Remova os anexos pelo botão **Remover anexos**.
+
+O modelo recebe o conteúdo, não apenas o caminho. Anexos acompanham o histórico
+protegido e sua sincronização cifrada quando habilitada, e continuam disponíveis
+nos próximos turnos. Não há cópia dos arquivos originais: ficam o texto extraído e
+as imagens normalizadas. A leitura visual pode falhar em texto ilegível; o agente
+deve apontar incertezas. Ele não executa instruções ou código contidos nos anexos.
 
 ## Instalação rápida
 

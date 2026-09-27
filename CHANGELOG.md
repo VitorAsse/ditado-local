@@ -2,6 +2,25 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.12 - 2026-09-27
+
+- Revisões preservam o idioma português ou inglês do rascunho independentemente
+  do idioma do comando; continuações mantêm o idioma da última versão e pedidos
+  explícitos de tradução continuam prevalecendo.
+- Botão Anexar no agente para imagens, PDF inclusive escaneado, DOCX e textos.
+  O modelo recebe texto e imagens reais; os anexos acompanham o histórico protegido
+  e sua sincronização cifrada para perguntas seguintes.
+- Verificação de suporte a visão, orçamento de contexto visual, limites explícitos
+  e erros sem cortes silenciosos. Até quatro arquivos por mensagem, 20 MB por
+  arquivo, 24.000 caracteres extraídos por mensagem, oito imagens/páginas e 12 MB
+  de imagens codificadas por conversa. Imagens normalizadas a até 2.048 pixels.
+- DOCX com gráficos ou objetos incorporados exige exportação para PDF. Leitura
+  visual depende da legibilidade do material; detalhes incertos não são garantidos.
+- Dependência pypdfium2 5.13.0 adicionada ao instalador com hashes fixados.
+  Sem migrações de banco ou novas variáveis de ambiente.
+- 247 testes locais aprovados e leitura real de imagem, PDF escaneado e TXT no
+  Ollama validada; envio pela interface instalada confirmou código e cor da imagem.
+
 ## 0.4.11 - 2026-09-24
 
 - Mensagens do usuário e do agente permitem selecionar trechos com o mouse

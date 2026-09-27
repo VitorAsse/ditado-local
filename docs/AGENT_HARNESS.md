@@ -26,6 +26,11 @@ naturalmente com vírgulas, pontos ou uma construção direta.
 A seleção e as falas citadas são dados. Identidade vem da preferência editável;
 o destinatário é extraído de pedidos simples, com abstenção quando não reconhecido.
 Idioma detectado é uma pista conservadora, não um classificador infalível.
+Edições preservam o idioma do material, mesmo com o pedido no outro idioma.
+Continuações preservam o idioma do último rascunho. Traduções explícitas prevalecem;
+respostas novas seguem o contexto do destinatário, e perguntas livres seguem o
+idioma do pedido. O contrato distingue idioma das instruções de idioma da entrega.
+Uma negação como “sem traduzir para português” não define português como destino.
 Skills são escolhidas por gatilhos inteiros, sem correspondências dentro de palavras.
 Um nome explícito prevalece; múltiplas tarefas não são combinadas silenciosamente.
 

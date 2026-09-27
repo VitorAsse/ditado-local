@@ -1,5 +1,7 @@
 import customtkinter as ctk
 import tkinter as tk
+from tkinter import filedialog
+from pathlib import Path
 
 from ditado_ai import normalize_agent_conversation
 from ditado_theme import APP_COLORS, app_font
@@ -19,11 +21,12 @@ class AgentChatWindow:
         self.recording = False
         self.loading = False
         self.closed = False
+        self.attachment_paths = []
 
         self.window = ctk.CTkToplevel(root)
         self.window.title("Agente local")
         self.window.geometry("620x650")
-        self.window.minsize(480, 540)
+        self.window.minsize(480, 600)
         self.window.configure(fg_color=APP_COLORS["background"])
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.transient(root)
@@ -72,7 +75,6 @@ class AgentChatWindow:
             border_width=1,
             border_color=APP_COLORS["border"],
         )
-        self.messages_frame.pack(fill="both", expand=True)
 
         composer = ctk.CTkFrame(
             shell,
@@ -81,7 +83,8 @@ class AgentChatWindow:
             border_width=1,
             border_color=APP_COLORS["border"],
         )
-        composer.pack(fill="x", pady=(12, 0))
+        composer.pack(fill="x", side="bottom", pady=(12, 0))
+        self.messages_frame.pack(fill="both", expand=True)
         self.input = ctk.CTkTextbox(
             composer,
             height=88,
@@ -95,6 +98,14 @@ class AgentChatWindow:
         )
         self.input.pack(fill="x", padx=12, pady=(12, 8))
         self.input.bind("<Control-Return>", self._submit_from_event)
+        self.attachment_label = ctk.CTkLabel(composer, text="", anchor="w", wraplength=420)
+        self.attachment_label.pack(fill="x", padx=12)
+        attachment_row = ctk.CTkFrame(composer, fg_color="transparent")
+        attachment_row.pack(fill="x", padx=12, pady=(0, 6))
+        self.attach_button = ctk.CTkButton(attachment_row, text="Anexar", width=90, command=self._pick_attachments)
+        self.attach_button.pack(side="left")
+        self.clear_attachments_button = ctk.CTkButton(attachment_row, text="Remover anexos", width=120, command=self._clear_attachments)
+        self.clear_attachments_button.pack(side="left", padx=8)
 
         self.status_label = ctk.CTkLabel(
             composer,
@@ -139,11 +150,11 @@ class AgentChatWindow:
         )
         self.send_button.pack(side="right")
         self.voice_button = ctk.CTkButton(
-            composer, text="Falar", height=32, width=100,
+            attachment_row, text="Falar", height=28, width=100,
             command=self._toggle_voice,
         )
         if self.on_voice:
-            self.voice_button.pack(anchor="w", padx=12, pady=(0, 12))
+            self.voice_button.pack(side="right")
 
         self._render_messages()
         self.window.after(100, self._focus_input)
@@ -206,6 +217,8 @@ class AgentChatWindow:
                 font=app_font(10, "bold"),
             ).pack(anchor="w", padx=12, pady=(9, 2))
             self._message_text(bubble, message["content"])
+            if message.get("attachments"):
+                self._message_text(bubble, "Anexos: " + ", ".join(a["name"] for a in message["attachments"]))
         self.messages_frame.after(
             60,
             lambda: self.messages_frame._parent_canvas.yview_moveto(1.0)
@@ -258,6 +271,8 @@ class AgentChatWindow:
         if self.loading or self.recording or not self.is_open():
             return
         instruction = self.input.get("1.0", "end").strip()
+        if not instruction and self.attachment_paths:
+            instruction = "Descreva o conteúdo dos anexos."
         if not instruction:
             self.status_label.configure(
                 text="Digite uma mensagem antes de enviar.",
@@ -266,6 +281,24 @@ class AgentChatWindow:
             return
         self.set_loading(True)
         self.on_send(instruction)
+
+    def _pick_attachments(self):
+        if self.loading or self.recording:
+            return
+        paths = filedialog.askopenfilenames(parent=self.window, title="Anexar imagens ou documentos",
+            filetypes=[("Imagens e documentos", "*.png *.jpg *.jpeg *.webp *.bmp *.pdf *.docx *.txt *.md *.csv *.tsv *.json *.log *.yaml *.yml *.xml *.html *.css *.js *.ts *.py *.sql"), ("Todos os arquivos", "*.*")])
+        combined = list(dict.fromkeys(self.attachment_paths + list(paths)))
+        if len(combined) > 4:
+            self.show_error("Envie até quatro anexos por mensagem.")
+            return
+        self.attachment_paths = combined
+        self.attachment_label.configure(text="\n".join(Path(p).name for p in combined))
+
+    def _clear_attachments(self):
+        if self.loading or self.recording:
+            return
+        self.attachment_paths = []
+        self.attachment_label.configure(text="")
 
     def set_loading(self, loading):
         self.loading = bool(loading)
@@ -278,6 +311,8 @@ class AgentChatWindow:
         )
         self.input.configure(state="disabled" if self.loading else "normal")
         self.voice_button.configure(state="disabled" if self.loading else "normal")
+        self.attach_button.configure(state="disabled" if self.loading else "normal")
+        self.clear_attachments_button.configure(state="disabled" if self.loading else "normal")
         self.status_label.configure(
             text=(
                 "O agente está preparando a resposta..."
@@ -293,6 +328,7 @@ class AgentChatWindow:
             return
         self.conversation = normalized
         self.set_loading(False)
+        self._clear_attachments()
         self.input.delete("1.0", "end")
         self.status_label.configure(
             text="Resposta pronta. Copie quando estiver satisfeito.",
