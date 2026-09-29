@@ -7,7 +7,7 @@ httpx==0.28.1
 numpy==2.4.6
 Pillow==12.3.0
 pypdfium2==5.13.0
-pycaw==20251023
+pycaw==20260921
 pynput==1.8.2
 pyperclip==1.11.0
 pystray==0.19.5
