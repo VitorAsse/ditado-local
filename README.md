@@ -112,11 +112,20 @@ teclado. Cada ação tem sua palavra, e as duas ficam escutando ao mesmo tempo:
 
 - **Para ditar no app em foco** (padrão `Hey Jarvis`): funciona como `Ctrl + Espaço`.
 - **Para falar com o agente** (padrão `Alexa`): abre o chat e envia a pergunta falada.
+  Se houver texto selecionado no app em foco, ele entra no chat junto com a pergunta.
   Com o chat aberto, a palavra continua a mesma conversa; feche o chat para começar
   outra. Enquanto o agente responde, a palavra é ignorada.
 
 Escolher para uma ação a palavra da outra troca as duas; `Desligado` desativa só
-aquela ação. Diga a palavra, espere o aviso `Ouvindo...` e fale. A gravação termina
+aquela ação.
+
+**Frase personalizada:** escolha `Personalizado`, digite a frase no campo abaixo
+(por exemplo `Ok computador`) e pressione `Enter`. Não há modelo treinado para ela:
+falas curtas, de até 2,5 segundos e seguidas de uma pausa, são transcritas localmente
+pelo mesmo Whisper do ditado e comparadas com a frase. Frases normais mais longas não
+são transcritas. Use duas ou mais palavras ou sílabas fortes; a sensibilidade define
+quanto a transcrição pode diferir. Fixar o idioma da transcrição deixa a detecção
+mais rápida e precisa. Diga a palavra, espere o aviso `Ouvindo...` e fale. A gravação termina
 sozinha depois de uma pausa de cerca de 1,2 segundo; `Esc` ou o botão `Cancelar`
 descartam o áudio. Se nada for dito em seis segundos, a gravação é descartada.
 
@@ -134,7 +143,22 @@ microfone aberto força o modo de chamada e piora o áudio do fone.
 Na primeira ativação, os modelos openWakeWord (cerca de 3 MB) são baixados do
 GitHub oficial do projeto e conferidos por SHA-256 em
 `%LOCALAPPDATA%\faster-whisper\models\wakeword`. As preferências desta seção
-ficam somente neste computador e não são sincronizadas.
+sincronizam com a conta, como todas as outras.
+
+### Dispositivos de som
+
+Na aba **Ditado**, além do microfone fixo usado pelo Ditado, escolha a **saída de som
+do Windows** e o **microfone padrão do Windows** usado por jogos e outros apps. Com
+um nome escolhido, o Ditado torna esse dispositivo o padrão do Windows ao abrir, ao
+mudar a opção e quando um dispositivo é conectado; `Não alterar` mantém a escolha do
+Windows. Um dispositivo ausente é avisado e nada é trocado. As escolhas sincronizam
+com a conta e valem nos seus outros PCs quando o dispositivo existir neles.
+
+Prefira um microfone padrão que não seja Bluetooth. Quando um app (gravador de clipes,
+chat de voz de jogo) abre o microfone de um fone ou caixa Bluetooth, o Windows muda o
+dispositivo para o modo de chamada e o som do jogo pode sair mono, baixo ou sumir.
+O Ditado só reinicia a lista de dispositivos de áudio quando o Windows informa
+microfones diferentes, para não acionar esse modo ao gravar.
 
 ### Agente local
 

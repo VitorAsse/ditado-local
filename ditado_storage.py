@@ -125,11 +125,14 @@ class AppConfig:
         "user_identity": {"display_name": "", "aliases": []},
         "agent_chat_hotkey": "Ctrl + Windows",
         "quick_correction_gesture": "Ctrl + clique direito",
-        # Device-local: an always-open microphone is a per-computer decision.
-        # Not synced, so the 16 cloud preferences stay unchanged.
+        # Empty keeps the Windows choice; a name makes that device the default.
+        "output_device_name": "",
+        "windows_microphone_name": "",
         "wake_word_enabled": False,
         "wake_word_dictation": "hey_jarvis",
         "wake_word_agent": "alexa",
+        "wake_phrase_dictation": "",
+        "wake_phrase_agent": "",
         "wake_word_sensitivity": "medium",
     }
 
@@ -150,9 +153,15 @@ class AppConfig:
         "microphone_name", "startup_enabled", "transcription_profile",
         "transcription_compute_type", "transcription_vocabulary", "agent_model", "agent_keep_alive",
     }
-    DEVICE_LOCAL_PREFERENCE_KEYS = {
-        "wake_word_enabled", "wake_word_dictation", "wake_word_agent", "wake_word_sensitivity",
+    # Every setting belongs to the account, including devices and voice activation.
+    SYNCED_PREFERENCE_KEYS |= {
+        "output_device_name", "windows_microphone_name",
+        "wake_word_enabled", "wake_word_dictation", "wake_word_agent",
+        "wake_phrase_dictation", "wake_phrase_agent", "wake_word_sensitivity",
     }
+    DEVICE_LOCAL_PREFERENCE_KEYS = set()
+    # A preference never chosen on this PC loses to a choice made on any other.
+    UNSET_TIMESTAMP = datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat(timespec="microseconds")
 
     def __init__(self, path=None):
         self.lock = threading.RLock()
@@ -174,7 +183,8 @@ class AppConfig:
         now = self._now()
         for key in self.SYNCED_PREFERENCE_KEYS:
             if not isinstance(preference_timestamps.get(key), str):
-                preference_timestamps[key] = now
+                untouched = self.data.get(key) == self.DEFAULTS.get(key)
+                preference_timestamps[key] = self.UNSET_TIMESTAMP if untouched else now
                 changed = True
 
         for collection_name in ("corrections", "rules", "skills"):

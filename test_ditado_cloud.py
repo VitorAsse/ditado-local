@@ -379,7 +379,12 @@ class CloudSyncTests(unittest.TestCase):
                   "microphone_name": "Microfone do primeiro PC", "startup_enabled": False,
                   "transcription_profile": "max_precision", "transcription_compute_type": "int8_float16",
                   "transcription_vocabulary": ["Agencify", "Supabase"],
-                  "agent_model": "qwen3.5:9b", "agent_keep_alive": "2h"}
+                  "agent_model": "qwen3.5:9b", "agent_keep_alive": "2h",
+                  "output_device_name": "Alto-falantes (Caixa)",
+                  "windows_microphone_name": "Viva voz (Webcam)",
+                  "wake_word_enabled": True, "wake_word_dictation": "custom",
+                  "wake_word_agent": "hey_jarvis", "wake_phrase_dictation": "Ok computador",
+                  "wake_phrase_agent": "", "wake_word_sensitivity": "high"}
         for key, value in values.items():
             config.set(key, value)
         config.set("microphone_name", "Microfone do primeiro PC")
@@ -391,6 +396,22 @@ class CloudSyncTests(unittest.TestCase):
         self.assertEqual(values, {k:other.get(k) for k in values})
         cloud_keys = {r["item_id"] for r in self.backend.sync_items.values() if r["item_type"] == "preference"}
         self.assertEqual(set(values), cloud_keys)
+        self.assertEqual(set(AppConfig.DEFAULTS) - {"corrections", "rules", "skills"}, cloud_keys)
+
+    def test_setting_never_chosen_on_an_upgraded_pc_does_not_override_the_cloud(self):
+        first, config, _, _ = self._manager("upgrade-first")
+        config.set("wake_word_enabled", True)
+        config.set("output_device_name", "Alto-falantes (Caixa)")
+        recovery = first.sync_once()["recovery_code"]
+        second, other, _, _ = self._manager("upgrade-second")
+        for key in ("wake_word_enabled", "output_device_name"):
+            other.data["_cloud_preference_timestamps"].pop(key, None)
+        other.save()
+        upgraded = AppConfig(path=other.path)
+        second.app_config = upgraded
+        second.sync_once(recovery_code=recovery)
+        self.assertTrue(upgraded.get("wake_word_enabled"))
+        self.assertEqual("Alto-falantes (Caixa)", upgraded.get("output_device_name"))
 
     def test_upgrade_adds_missing_setup_timestamps_and_syncs_existing_values(self):
         manager, config, _, _ = self._manager("upgrade-settings")

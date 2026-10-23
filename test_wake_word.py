@@ -7,7 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -24,15 +24,22 @@ from ditado_wakeword import (
     CHUNK_SAMPLES,
     FEATURE_WINDOW,
     WARMUP_PREDICTIONS,
+    PhraseSpotter,
     RetryClock,
+    SpeechBursts,
     SpeechEndpoint,
+    WakeListeners,
     WakeWordDetector,
     WakeWordEngine,
+    builtin_wake_words,
+    custom_wake_phrases,
     ensure_models,
+    phrase_score,
     required_model_files,
     resolve_wake_assignment,
     resolve_wake_sensitivity,
     resolve_wake_word,
+    validate_wake_phrase,
     wake_word_actions,
 )
 
@@ -125,6 +132,103 @@ class AssignmentTests(unittest.TestCase):
         self.assertEqual(
             {"dictation": "alexa", "agent": None}, resolve_wake_assignment("alexa", "alexa"),
         )
+
+    def test_custom_phrase_needs_a_valid_typed_phrase(self):
+        self.assertEqual(
+            {"dictation": "hey_jarvis", "agent": None},
+            resolve_wake_assignment("hey_jarvis", "custom", {"agent": "oi"}),
+        )
+        assignment = resolve_wake_assignment(
+            "alexa", "custom", {"agent": "  Ok   computador "},
+        )
+        self.assertEqual({"dictation": "alexa", "agent": "custom_agent"}, assignment)
+        self.assertEqual(("alexa",), builtin_wake_words(assignment))
+        self.assertEqual(
+            {"custom_agent": "Ok computador"},
+            custom_wake_phrases(assignment, {"agent": "  Ok   computador "}),
+        )
+
+    def test_identical_custom_phrases_keep_only_dictation(self):
+        assignment = resolve_wake_assignment(
+            "custom", "custom", {"dictation": "Ok computador", "agent": "ok, computador!"},
+        )
+        self.assertEqual({"dictation": "custom_dictation", "agent": None}, assignment)
+
+
+class PhraseMatchTests(unittest.TestCase):
+    def test_accents_case_and_punctuation_are_ignored(self):
+        self.assertEqual(1.0, phrase_score(" Olá, Assistente! ", "ola assistente"))
+
+    def test_close_transcriptions_score_high_and_other_speech_low(self):
+        self.assertGreater(phrase_score("Ok, computadô.", "Ok computador"), 0.8)
+        self.assertGreater(phrase_score("Ei, ok computador", "Ok computador"), 0.9)
+        self.assertLess(phrase_score("Bom dia, tudo bem?", "Ok computador"), 0.5)
+
+    def test_sentence_containing_the_phrase_is_not_a_command(self):
+        self.assertEqual(
+            0.0, phrase_score("eu falei ok computador para ele ontem", "Ok computador"),
+        )
+
+    def test_phrase_validation(self):
+        self.assertIsNone(validate_wake_phrase("Ok computador")[1])
+        self.assertIsNotNone(validate_wake_phrase("oi")[1])
+        self.assertIsNotNone(validate_wake_phrase("x" * 41)[1])
+        self.assertEqual("Ok computador", validate_wake_phrase("  Ok   computador ")[0])
+
+
+class SpeechBurstTests(unittest.TestCase):
+    RATE = 16_000
+
+    def block(self, level, seconds):
+        return np.full(int(self.RATE * seconds), level, dtype=np.float32)
+
+    def test_short_utterance_followed_by_pause_is_returned_once(self):
+        bursts = SpeechBursts()
+        out = bursts.feed(self.block(0.001, 0.5))
+        out += bursts.feed(self.block(0.1, 0.8))
+        self.assertEqual([], out)
+        out += bursts.feed(self.block(0.001, 0.6))
+        self.assertEqual(1, len(out))
+        self.assertGreaterEqual(out[0].size, int(self.RATE * 0.8))
+        self.assertEqual([], bursts.feed(self.block(0.001, 1.0)))
+
+    def test_long_speech_and_clicks_are_ignored(self):
+        bursts = SpeechBursts()
+        out = bursts.feed(self.block(0.1, 4.0)) + bursts.feed(self.block(0.001, 0.6))
+        out += bursts.feed(self.block(0.1, 0.1)) + bursts.feed(self.block(0.001, 0.6))
+        self.assertEqual([], out)
+
+
+class PhraseSpotterTests(unittest.TestCase):
+    def test_transcribes_short_utterances_and_reports_the_matching_phrase(self):
+        detected, heard = threading.Event(), []
+        transcripts = iter(["bom dia", "Ok, computador."])
+        spotter = PhraseSpotter(
+            lambda audio: next(transcripts),
+            {"custom_agent": "Ok computador"},
+            0.8,
+            lambda trigger, score: (heard.append(trigger), detected.set()),
+        )
+        try:
+            for _ in range(2):
+                spotter.feed(np.full(16_000, 0.1, dtype=np.float32), 16_000)
+                spotter.feed(np.full(16_000, 0.001, dtype=np.float32), 16_000)
+            self.assertTrue(detected.wait(2))
+            self.assertEqual(["custom_agent"], heard)
+        finally:
+            spotter.close()
+            spotter.thread.join(2)
+
+    def test_listeners_share_feed_reset_and_sensitivity(self):
+        first, second = Mock(), Mock()
+        listeners = WakeListeners([first, second])
+        listeners.feed("audio", 48_000)
+        listeners.reset()
+        listeners.set_sensitivity("high")
+        for listener in (first, second):
+            listener.feed.assert_called_once_with("audio", 48_000)
+            listener.reset.assert_called_once_with()
+            listener.set_sensitivity.assert_called_once_with("high")
 
 
 class DetectorTests(unittest.TestCase):
@@ -252,13 +356,14 @@ class RetryClockTests(unittest.TestCase):
 
 
 class WakeConfigTests(unittest.TestCase):
-    def test_wake_preferences_default_off_and_stay_on_this_device(self):
+    def test_wake_preferences_default_off_and_sync_with_the_account(self):
         self.assertFalse(AppConfig.DEFAULTS["wake_word_enabled"])
         for key in ("wake_word_enabled", "wake_word_dictation", "wake_word_agent",
-                    "wake_word_sensitivity"):
-            self.assertIn(key, AppConfig.DEVICE_LOCAL_PREFERENCE_KEYS)
-            self.assertNotIn(key, AppConfig.SYNCED_PREFERENCE_KEYS)
-        self.assertEqual(16, len(AppConfig.SYNCED_PREFERENCE_KEYS))
+                    "wake_phrase_dictation", "wake_phrase_agent", "wake_word_sensitivity",
+                    "output_device_name", "windows_microphone_name"):
+            self.assertIn(key, AppConfig.SYNCED_PREFERENCE_KEYS)
+        self.assertEqual(set(), AppConfig.DEVICE_LOCAL_PREFERENCE_KEYS)
+        self.assertEqual(24, len(AppConfig.SYNCED_PREFERENCE_KEYS))
 
     def test_single_word_setting_from_0_4_13_becomes_two_words(self):
         for action, expected in (("agent", ("alexa", "hey_jarvis")),
@@ -302,6 +407,7 @@ def wake_app(dictation="hey_jarvis", agent="alexa"):
     app.overlay = Mock()
     app.events = DITADO_LOCAL.queue.SimpleQueue()
     app.agent_chat_window = None
+    app.wake_agent_selection = None
 
     def start(mode):
         app.recording = True
@@ -387,6 +493,7 @@ class WakeRecordingTests(unittest.TestCase):
         app = wake_app()
         app.history = SimpleNamespace(path="perfil.json")
         app.agent_chat_profile_path = "perfil.json"
+        app.agent_chat_entry_id = "entry:1"
         chat = Mock()
         chat.is_open.return_value = True
         chat.loading = False
@@ -396,7 +503,77 @@ class WakeRecordingTests(unittest.TestCase):
 
         app._open_new_agent_chat = Mock(side_effect=open_chat)
         app._toggle_chat_recording = Mock(side_effect=lambda _chat: app.start_recording("agent_chat"))
+        app.desktop = Mock()
+        app.desktop.basic_focus.return_value = SimpleNamespace(window=0, control=0)
         return app, chat
+
+    def selection_app(self, selected="Texto selecionado"):
+        app, chat = self.agent_app()
+        app.desktop.basic_focus.return_value = SimpleNamespace(window=123, control=456)
+        app.desktop.capture_selection.return_value = (selected, None)
+        app._focus_is_ditado = Mock(return_value=False)
+        app.root = Mock()
+        new_chat = Mock()
+        new_chat.is_open.return_value = True
+        new_chat.loading = False
+
+        def create(text):
+            app.agent_chat_window = new_chat
+            app.agent_chat_entry_id = "draft:1"
+            return new_chat
+
+        app._create_agent_chat = Mock(side_effect=create)
+        return app, chat, new_chat
+
+    def deliver_selection(self, app):
+        event, payload = app.events.get(timeout=2)
+        self.assertEqual("wake_agent_selection", event)
+        app._finish_wake_agent_selection(payload)
+
+    def test_selected_text_goes_into_a_new_chat_with_the_question(self):
+        app, _chat, new_chat = self.selection_app()
+
+        app._start_wake_recording("alexa")
+        self.assertEqual("agent_chat", app.recording_mode)
+        app._create_agent_chat.assert_not_called()
+        self.deliver_selection(app)
+
+        app._create_agent_chat.assert_called_once_with("Texto selecionado")
+        new_chat.set_recording.assert_called_once_with(True)
+        self.assertEqual(("draft:1", "perfil.json"), app.voice_chat_target)
+        app._finish_wake_recording((1, "end"))
+        app._toggle_chat_recording.assert_called_once_with(new_chat)
+
+    def test_pause_before_the_selection_is_read_finishes_after_the_chat_opens(self):
+        app, _chat, new_chat = self.selection_app()
+        app._start_wake_recording("alexa")
+        app._finish_wake_recording((1, "end"))
+        app._toggle_chat_recording.assert_not_called()
+
+        self.deliver_selection(app)
+
+        app._toggle_chat_recording.assert_called_once_with(new_chat)
+
+    def test_selection_is_added_to_the_open_conversation(self):
+        app, chat, _new_chat = self.selection_app("Outro trecho")
+        app.agent_chat_window = chat
+
+        app._start_wake_recording("alexa")
+        self.deliver_selection(app)
+
+        chat.prefill.assert_called_once_with("Outro trecho")
+        app._create_agent_chat.assert_not_called()
+        chat.set_recording.assert_called_once_with(True)
+        self.assertEqual(("entry:1", "perfil.json"), app.voice_chat_target)
+
+    def test_cancelled_recording_ignores_the_late_selection(self):
+        app, _chat, _new_chat = self.selection_app()
+        app._start_wake_recording("alexa")
+        app.recording = False
+
+        self.deliver_selection(app)
+
+        app._create_agent_chat.assert_not_called()
 
     def test_agent_word_opens_chat_and_records_question(self):
         app, chat = self.agent_app()
@@ -441,6 +618,69 @@ class WakeRecordingTests(unittest.TestCase):
 
         app._open_new_agent_chat.assert_called_once_with()
         app._toggle_chat_recording.assert_called_once_with(chat)
+
+
+class AudioDeviceTests(unittest.TestCase):
+    def test_portaudio_restarts_only_when_the_microphones_change(self):
+        app = wake_app()
+        app.microphone = Mock()
+        app._get_input_devices = Mock(return_value=[])
+        app._select_saved_microphone = Mock()
+        app._apply_windows_audio_defaults = Mock()
+        signature = [("brio",)]
+        with patch.object(DITADO_LOCAL, "sd") as audio, patch.object(
+            DITADO_LOCAL, "capture_endpoint_signature", side_effect=lambda: signature[0],
+        ):
+            app._refresh_audio_devices()
+            app._refresh_audio_devices()
+            self.assertEqual(1, audio._terminate.call_count)
+            app._apply_windows_audio_defaults.assert_not_called()
+
+            signature[0] = ("brio", "bluetooth")
+            app._refresh_audio_devices()
+            self.assertEqual(2, audio._terminate.call_count)
+            app._apply_windows_audio_defaults.assert_called_once_with()
+
+            app._refresh_audio_devices(force=True)
+            self.assertEqual(3, audio._terminate.call_count)
+
+    def devices_app(self, output="", microphone=""):
+        app = wake_app()
+        app.config.get.side_effect = lambda key, default=None: {
+            "output_device_name": output, "windows_microphone_name": microphone,
+        }.get(key, default)
+        app.playback_mute = SimpleNamespace(active=False)
+        app._refresh_windows_device_options = Mock()
+        return app
+
+    def test_chosen_devices_become_the_windows_defaults(self):
+        app = self.devices_app(output="Caixa", microphone="Webcam")
+        with patch.object(DITADO_LOCAL, "set_default_endpoint", return_value=True) as setter:
+            app._apply_windows_audio_defaults()
+        self.assertEqual(
+            [(("render", "Caixa"),), (("capture", "Webcam"),)],
+            [call.args and (call.args,) for call in setter.call_args_list],
+        )
+        app.status.set.assert_not_called()
+
+    def test_unchanged_choice_never_touches_windows(self):
+        app = self.devices_app()
+        with patch.object(DITADO_LOCAL, "set_default_endpoint") as setter:
+            app._apply_windows_audio_defaults()
+        setter.assert_not_called()
+
+    def test_missing_device_keeps_the_windows_choice_and_warns(self):
+        app = self.devices_app(output="Caixa desligada")
+        with patch.object(DITADO_LOCAL, "set_default_endpoint", return_value=False):
+            app._apply_windows_audio_defaults()
+        self.assertIn("Caixa desligada", app.status.set.call_args.args[0])
+
+    def test_defaults_are_not_changed_during_a_recording(self):
+        app = self.devices_app(output="Caixa")
+        app.recording = True
+        with patch.object(DITADO_LOCAL, "set_default_endpoint") as setter:
+            app._apply_windows_audio_defaults()
+        setter.assert_not_called()
 
 
 class WakeListenerLifecycleTests(unittest.TestCase):

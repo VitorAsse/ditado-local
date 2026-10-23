@@ -68,7 +68,12 @@ from ditado_ai import (
     normalize_agent_conversation,
     select_voice_skills,
 )
-from ditado_audio import PlaybackMuteController
+from ditado_audio import (
+    PlaybackMuteController,
+    audio_endpoint_names,
+    capture_endpoint_signature,
+    set_default_endpoint,
+)
 from ditado_chat import AgentChatWindow
 from ditado_desktop import DesktopTextAccess
 from ditado_notification import ResultNotification
@@ -92,18 +97,27 @@ from ditado_cloud import (
 )
 from ditado_storage import AppConfig, HistoryStore, atomic_write_text
 from ditado_wakeword import (
+    PHRASE_SIMILARITY,
     WAKE_SENSITIVITIES,
+    WAKE_WORD_CUSTOM,
+    WAKE_WORD_CUSTOM_LABEL,
     WAKE_WORD_OFF,
     WAKE_WORD_OFF_LABEL,
     WAKE_WORDS,
+    PhraseSpotter,
     RetryClock,
     SpeechEndpoint,
+    WakeListeners,
     WakeWordDetector,
     WakeWordEngine,
+    builtin_wake_words,
+    custom_wake_phrases,
     ensure_models,
     is_session_locked,
+    normalize_phrase,
     resolve_wake_assignment,
     resolve_wake_sensitivity,
+    validate_wake_phrase,
     wake_word_actions,
 )
 from ditado_harness import normalize_identity, normalize_prose_punctuation
@@ -179,6 +193,9 @@ def resolve_transcription_profile(profile_name):
         profile_name,
         TRANSCRIPTION_PROFILES["balanced"],
     )
+
+
+WINDOWS_DEVICE_UNCHANGED = "Não alterar (manter o padrão do Windows)"
 
 
 def resolve_transcription_language(language_name):
@@ -577,9 +594,14 @@ class DitadoLocalApp:
         self.ollama_setup_in_progress = False
         self.wake_enabled = tk.BooleanVar(value=bool(self.config.get("wake_word_enabled", False)))
         self.wake_words = {
-            action: tk.StringVar(value=self._wake_word_label(word))
-            for action, word in self._wake_assignment().items()
+            action: tk.StringVar(value=self._wake_word_label(
+                self._wake_assignment()[action]
+                or self.config.get(f"wake_word_{action}", WAKE_WORD_OFF)
+            ))
+            for action in ("dictation", "agent")
         }
+        self.wake_phrase_entries = {}
+        self.wake_agent_selection = None
         self.wake_sensitivity = tk.StringVar(
             value=WAKE_SENSITIVITIES[
                 resolve_wake_sensitivity(self.config.get("wake_word_sensitivity"))
@@ -1075,6 +1097,47 @@ class DitadoLocalApp:
         self.microphone.pack(fill="x", pady=(7, 14))
         self._select_saved_microphone()
 
+        self.windows_device_controls = {}
+        for key, flow, title in (
+            ("output_device_name", "render", "Saída de som do Windows"),
+            ("windows_microphone_name", "capture", "Microfone padrão do Windows (outros apps)"),
+        ):
+            ctk.CTkLabel(
+                inner,
+                text=title,
+                text_color="#DADAE2",
+                font=app_font(size=12, weight="bold"),
+            ).pack(anchor="w")
+            control = ctk.CTkComboBox(
+                inner,
+                values=[WINDOWS_DEVICE_UNCHANGED],
+                command=lambda label, key=key, flow=flow: self._windows_device_changed(key, flow, label),
+                height=38,
+                corner_radius=10,
+                fg_color="#202027",
+                border_color="#30303A",
+                button_color="#2B2B35",
+                button_hover_color="#383844",
+                dropdown_fg_color="#202027",
+                text_color="#EFEFF4",
+            )
+            control.pack(fill="x", pady=(7, 14))
+            self.windows_device_controls[key] = (control, flow)
+        ctk.CTkLabel(
+            inner,
+            text=(
+                "O Ditado mantém esses dispositivos como padrão do Windows. Prefira um microfone "
+                "que não seja Bluetooth: quando um app abre o microfone de um fone ou caixa "
+                "Bluetooth, o som passa para o modo de chamada e pode sumir nos jogos."
+            ),
+            text_color="#72727F",
+            font=app_font(size=10),
+            justify="left",
+            wraplength=600,
+        ).pack(anchor="w", pady=(0, 14))
+        self._refresh_windows_device_options()
+        self.root.after(1500, self._apply_windows_audio_defaults)
+
         ctk.CTkLabel(
             inner,
             text="Idioma falado",
@@ -1179,9 +1242,6 @@ class DitadoLocalApp:
             self._wake_enabled_changed,
         ).pack(fill="x", padx=16, pady=(0, 10))
 
-        options = ctk.CTkFrame(card, fg_color="transparent")
-        options.pack(fill="x", padx=16)
-        options.grid_columnconfigure((0, 1), weight=1)
         segmented = dict(
             height=30,
             corner_radius=10,
@@ -1192,22 +1252,38 @@ class DitadoLocalApp:
             unselected_hover_color="#2B2B35",
             text_color="#EFEFF4",
         )
-        word_labels = [item["display_name"] for item in WAKE_WORDS.values()] + [WAKE_WORD_OFF_LABEL]
-        for column, (title, values, variable, command) in enumerate((
-            ("Para ditar no app em foco", word_labels, self.wake_words["dictation"],
-             lambda _value: self._wake_word_changed("dictation")),
-            ("Para falar com o agente", word_labels, self.wake_words["agent"],
-             lambda _value: self._wake_word_changed("agent")),
-        )):
+        word_labels = [item["display_name"] for item in WAKE_WORDS.values()] + [
+            WAKE_WORD_CUSTOM_LABEL, WAKE_WORD_OFF_LABEL,
+        ]
+        for action, title in (("dictation", "Para ditar no app em foco"),
+                              ("agent", "Para falar com o agente")):
             ctk.CTkLabel(
-                options,
+                card,
                 text=title,
                 text_color="#DADAE2",
                 font=app_font(size=11, weight="bold"),
-            ).grid(row=0, column=column, sticky="w", padx=(0 if column == 0 else 6, 0))
+            ).pack(anchor="w", padx=16)
             ctk.CTkSegmentedButton(
-                options, values=values, variable=variable, command=command, **segmented,
-            ).grid(row=1, column=column, sticky="ew", padx=(0, 6) if column == 0 else (6, 0), pady=(5, 10))
+                card,
+                values=word_labels,
+                variable=self.wake_words[action],
+                command=lambda _value, action=action: self._wake_word_changed(action),
+                **segmented,
+            ).pack(fill="x", padx=16, pady=(5, 6))
+            entry = ctk.CTkEntry(
+                card,
+                placeholder_text="Frase personalizada, por exemplo: Ok computador (Enter salva)",
+                height=32,
+                fg_color="#222229",
+                border_color="#33333D",
+            )
+            phrase = self.config.get(f"wake_phrase_{action}", "")
+            if phrase:
+                entry.insert(0, phrase)
+            entry.pack(fill="x", padx=16, pady=(0, 12))
+            entry.bind("<Return>", lambda _event, action=action: self._wake_phrase_changed(action))
+            entry.bind("<FocusOut>", lambda _event, action=action: self._wake_phrase_changed(action))
+            self.wake_phrase_entries[action] = entry
         ctk.CTkLabel(
             card,
             text="Sensibilidade",
@@ -1234,9 +1310,11 @@ class DitadoLocalApp:
             text=(
                 "Com a ativação ligada, o microfone fica aberto e é analisado só neste PC; "
                 "nada é gravado até ouvir a palavra. A gravação termina numa pausa da fala "
-                "ou com Esc para cancelar. Fica pausada com a tela bloqueada. Com o chat do "
-                "agente aberto, a palavra do agente continua a mesma conversa; feche o chat "
-                "para começar outra."
+                "ou com Esc para cancelar. Fica pausada com a tela bloqueada. Frases "
+                "personalizadas são reconhecidas por transcrição local de falas curtas "
+                "seguidas de pausa. Com o chat do agente aberto, a palavra do agente continua "
+                "a mesma conversa; feche o chat para começar outra. Texto selecionado no app "
+                "em foco vai junto para o agente."
             ),
             text_color="#72727F",
             font=app_font(size=10),
@@ -2132,13 +2210,23 @@ class DitadoLocalApp:
             "O microfone selecionado não está disponível. Reconecte-o ou escolha outro microfone."
         )
 
-    def _refresh_audio_devices(self):
+    def _refresh_audio_devices(self, force=False):
         sd.stop()
+        # Restarting PortAudio re-probes every audio driver, including Bluetooth
+        # hands-free ones, which can switch a Bluetooth speaker to call mode. Only
+        # restart it when Windows reports a different set of microphones.
+        signature = capture_endpoint_signature()
+        changed = signature is None or signature != getattr(self, "audio_endpoint_signature", None)
         terminate = getattr(sd, "_terminate", None)
         initialize = getattr(sd, "_initialize", None)
-        if callable(terminate) and callable(initialize):
+        if (force or changed) and callable(terminate) and callable(initialize):
             terminate()
             initialize()
+        self.audio_endpoint_signature = signature
+        if changed and getattr(self, "audio_endpoint_signature_seen", False):
+            # A reconnected device may have taken over the Windows defaults.
+            self._apply_windows_audio_defaults()
+        self.audio_endpoint_signature_seen = True
 
         self.input_devices = self._get_input_devices()
         microphone_labels = [self._device_label(device) for device in self.input_devices]
@@ -2174,19 +2262,82 @@ class DitadoLocalApp:
         try:
             return device, self._start_input_stream(device)
         except sd.PortAudioError:
-            self._refresh_audio_devices()
+            self._refresh_audio_devices(force=True)
             device = self._selected_device()
             return device, self._start_input_stream(device)
+
+    def _refresh_windows_device_options(self):
+        for key, (control, flow) in getattr(self, "windows_device_controls", {}).items():
+            names = audio_endpoint_names(flow)
+            control.configure(values=[WINDOWS_DEVICE_UNCHANGED] + names)
+            saved = self.config.get(key, "")
+            if not saved:
+                control.set(WINDOWS_DEVICE_UNCHANGED)
+            elif saved in names:
+                control.set(saved)
+            else:
+                control.set(f"Indisponível: {saved}")
+
+    def _windows_device_changed(self, key, flow, label):
+        if label.startswith("Indisponível: "):
+            return
+        name = "" if label == WINDOWS_DEVICE_UNCHANGED else label
+        self.config.set(key, name)
+        self._sync_after_local_change(
+            f"Dispositivo padrão do Windows: {name}." if name else "O Ditado não altera mais esse dispositivo do Windows."
+        )
+        if name:
+            self._apply_windows_audio_defaults()
+
+    def _apply_windows_audio_defaults(self):
+        """Keep the chosen speaker and microphone as Windows defaults, when present."""
+        if self.recording or getattr(self.playback_mute, "active", False):
+            return
+        missing = []
+        for key, flow in (("output_device_name", "render"), ("windows_microphone_name", "capture")):
+            name = self.config.get(key, "")
+            if not name:
+                continue
+            try:
+                if not set_default_endpoint(flow, name):
+                    missing.append(name)
+            except Exception:
+                missing.append(name)
+        self._refresh_windows_device_options()
+        if missing:
+            self.status.set(f"Dispositivo indisponível: {', '.join(missing)}. O padrão do Windows foi mantido.")
+
+    def _refresh_wake_from_config(self):
+        self.wake_enabled.set(bool(self.config.get("wake_word_enabled", False)))
+        assignment = self._wake_assignment()
+        for action in ("dictation", "agent"):
+            self.wake_words[action].set(self._wake_word_label(
+                assignment[action] or self.config.get(f"wake_word_{action}", WAKE_WORD_OFF)
+            ))
+            entry = self.wake_phrase_entries.get(action)
+            if entry is not None:
+                entry.delete(0, "end")
+                entry.insert(0, self.config.get(f"wake_phrase_{action}", ""))
+        sensitivity = resolve_wake_sensitivity(self.config.get("wake_word_sensitivity"))
+        self.wake_sensitivity.set(WAKE_SENSITIVITIES[sensitivity]["display_name"])
+        if self.wake_engine is not None:
+            self.wake_engine.set_sensitivity(sensitivity)
+        if self.wake_enabled.get():
+            self._load_wake_engine()
+        else:
+            self._stop_wake_listener()
+        self._update_wake_status()
+        self._refresh_tray_menu()
 
     def _microphone_changed(self, selected_label):
         try:
             device_index = int(selected_label.split(":", 1)[0])
             device = next(item for item in self.input_devices if item["index"] == device_index)
             self.config.set("microphone_name", device["name"])
-            self.status.set(f"Microfone fixado: {device['name']}")
             # The wake listener reopens on the newly fixed microphone.
             self._stop_wake_listener()
             self.wake_retry.succeeded()
+            self._sync_after_local_change(f"Microfone fixado: {device['name']}.")
         except (ValueError, StopIteration):
             self.status.set("Não foi possível salvar o microfone selecionado.")
 
@@ -2200,38 +2351,87 @@ class DitadoLocalApp:
             self._stop_wake_listener()
         self._update_wake_status()
         self._refresh_tray_menu()
+        self._sync_after_local_change(
+            "Ativação por voz ligada." if enabled else "Ativação por voz desligada."
+        )
 
     def _toggle_wake_from_tray(self):
         self.wake_enabled.set(not self.wake_enabled.get())
         self._wake_enabled_changed()
 
+    def _wake_phrase_settings(self):
+        return {action: self.config.get(f"wake_phrase_{action}", "") for action in ("dictation", "agent")}
+
     def _wake_assignment(self):
         return resolve_wake_assignment(
             self.config.get("wake_word_dictation"), self.config.get("wake_word_agent"),
+            self._wake_phrase_settings(),
         )
 
     @staticmethod
     def _wake_word_label(word):
-        return WAKE_WORDS[word]["display_name"] if word in WAKE_WORDS else WAKE_WORD_OFF_LABEL
+        if word in WAKE_WORDS:
+            return WAKE_WORDS[word]["display_name"]
+        if word and str(word).startswith(WAKE_WORD_CUSTOM):
+            return WAKE_WORD_CUSTOM_LABEL
+        return WAKE_WORD_OFF_LABEL
 
-    def _wake_listened_words(self):
-        return tuple(sorted(wake_word_actions(self._wake_assignment())))
+    def _wake_signature(self):
+        """What the listener must recognize: built-in words and typed phrases."""
+        assignment = self._wake_assignment()
+        phrases = custom_wake_phrases(assignment, self._wake_phrase_settings())
+        return builtin_wake_words(assignment), tuple(sorted(phrases.items()))
 
     def _wake_word_changed(self, action):
         label = self.wake_words[action].get()
-        word = next((key for key, item in WAKE_WORDS.items()
-                     if item["display_name"] == label), WAKE_WORD_OFF)
+        if label == WAKE_WORD_CUSTOM_LABEL:
+            word = WAKE_WORD_CUSTOM
+        else:
+            word = next((key for key, item in WAKE_WORDS.items()
+                         if item["display_name"] == label), WAKE_WORD_OFF)
         other = "agent" if action == "dictation" else "dictation"
         assignment = self._wake_assignment()
-        if word != WAKE_WORD_OFF and assignment[other] == word:
+        if word in WAKE_WORDS and assignment[other] == word:
             # One word per action: choosing the other action's word swaps them.
-            swapped = assignment[action] or WAKE_WORD_OFF
+            swapped = assignment[action] if assignment[action] in WAKE_WORDS else WAKE_WORD_OFF
             self.config.set(f"wake_word_{other}", swapped)
             self.wake_words[other].set(self._wake_word_label(swapped))
         self.config.set(f"wake_word_{action}", word)
         if self.wake_enabled.get():
             self._load_wake_engine()
         self._update_wake_status()
+        if word == WAKE_WORD_CUSTOM and self._wake_assignment()[action] is None:
+            self.wake_phrase_entries[action].focus_set()
+        else:
+            self._sync_after_local_change("Palavra de ativação salva.")
+
+    def _wake_phrase_changed(self, action):
+        entry = self.wake_phrase_entries[action]
+        clean, error = validate_wake_phrase(entry.get())
+        saved = self.config.get(f"wake_phrase_{action}", "")
+        if not clean:
+            if saved:
+                self.config.set(f"wake_phrase_{action}", "")
+                self._load_wake_engine()
+                self._sync_after_local_change("Frase personalizada removida.")
+            self._update_wake_status()
+            return
+        other = "agent" if action == "dictation" else "dictation"
+        if (error is None and self.config.get(f"wake_word_{other}") == WAKE_WORD_CUSTOM
+                and normalize_phrase(clean) == normalize_phrase(self.config.get(f"wake_phrase_{other}", ""))):
+            error = "Use frases diferentes para ditar e para o agente."
+        if error:
+            self.wake_status_text.set(error)
+            return
+        if clean == saved and self.config.get(f"wake_word_{action}") == WAKE_WORD_CUSTOM:
+            return
+        self.config.set(f"wake_phrase_{action}", clean)
+        self.config.set(f"wake_word_{action}", WAKE_WORD_CUSTOM)
+        self.wake_words[action].set(WAKE_WORD_CUSTOM_LABEL)
+        if self.wake_enabled.get():
+            self._load_wake_engine()
+        self._update_wake_status()
+        self._sync_after_local_change(f"Frase de ativação salva: “{clean}”.")
 
     def _wake_settings_changed(self, _value=None):
         sensitivity = next((key for key, item in WAKE_SENSITIVITIES.items()
@@ -2239,51 +2439,79 @@ class DitadoLocalApp:
                            resolve_wake_sensitivity(None))
         self.config.set("wake_word_sensitivity", sensitivity)
         if self.wake_engine is not None:
-            self.wake_engine.threshold = WAKE_SENSITIVITIES[sensitivity]["threshold"]
+            self.wake_engine.set_sensitivity(sensitivity)
         self._update_wake_status()
+        self._sync_after_local_change("Sensibilidade da ativação salva.")
 
     def _load_wake_engine(self):
         if self.wake_loading or self.closing or not self.wake_enabled.get():
             return
-        words = self._wake_listened_words()
-        if not words:
+        signature = self._wake_signature()
+        if not any(signature):
             self._stop_wake_listener()
             if self.wake_engine is not None:
                 self.wake_engine.close()
             self.wake_engine, self.wake_engine_words = None, None
             self._update_wake_status()
             return
-        if self.wake_engine is not None and self.wake_engine_words == words:
+        if self.wake_engine is not None and self.wake_engine_words == signature:
             return
         self.wake_loading = True
         self._update_wake_status()
-        threading.Thread(target=self._prepare_wake_engine, args=(words,), daemon=True).start()
+        threading.Thread(target=self._prepare_wake_engine, args=(signature,), daemon=True).start()
 
-    def _prepare_wake_engine(self, words):
+    def _prepare_wake_engine(self, signature):
+        words = signature[0]
+        detector = None
         try:
-            paths = ensure_models(WAKE_MODEL_DIR, words)
-            detector = WakeWordDetector.from_files(paths, words)
+            if words:
+                paths = ensure_models(WAKE_MODEL_DIR, words)
+                detector = WakeWordDetector.from_files(paths, words)
         except Exception as error:
             self.events.put(("wake_engine_failed", f"Não foi possível preparar a ativação por voz: {error}"))
             return
-        self.events.put(("wake_engine_ready", (words, detector)))
+        self.events.put(("wake_engine_ready", (signature, detector)))
 
     def _finish_wake_engine(self, payload):
-        words, detector = payload
+        signature, detector = payload
         self.wake_loading = False
         self._stop_wake_listener()
         if self.wake_engine is not None:
             self.wake_engine.close()
         sensitivity = resolve_wake_sensitivity(self.config.get("wake_word_sensitivity"))
-        self.wake_engine = WakeWordEngine(
-            detector,
-            WAKE_SENSITIVITIES[sensitivity]["threshold"],
-            lambda word, _score: self.events.put(("wake_word", word)),
-        )
-        self.wake_engine_words = words
-        if words != self._wake_listened_words():
+
+        def on_detect(trigger, _score):
+            self.events.put(("wake_word", trigger))
+
+        listeners = []
+        if detector is not None:
+            listeners.append(WakeWordEngine(detector, WAKE_SENSITIVITIES[sensitivity]["threshold"], on_detect))
+        if signature[1]:
+            listeners.append(PhraseSpotter(
+                self._transcribe_wake_phrase, dict(signature[1]),
+                PHRASE_SIMILARITY[sensitivity], on_detect,
+            ))
+        self.wake_engine = WakeListeners(listeners)
+        self.wake_engine_words = signature
+        if signature != self._wake_signature():
             self._load_wake_engine()
         self._update_wake_status()
+
+    def _transcribe_wake_phrase(self, audio):
+        """Transcribe a short utterance heard while idle, to compare with custom phrases."""
+        model = self.model
+        if model is None or self.recording or self.processing:
+            return ""
+        segments, _info = model.transcribe(
+            audio,
+            language=resolve_transcription_language(self.config.get("transcription_language", "auto")),
+            beam_size=1,
+            temperature=0,
+            vad_filter=False,
+            condition_on_previous_text=False,
+            without_timestamps=True,
+        )
+        return " ".join(segment.text for segment in segments if segment.no_speech_prob < 0.6)
 
     def _fail_wake_engine(self, message):
         self.wake_loading = False
@@ -2351,14 +2579,21 @@ class DitadoLocalApp:
 
     def _update_wake_status(self):
         assignment = self._wake_assignment()
-        heard = [
-            f"“{WAKE_WORDS[word]['display_name']}” {purpose}"
-            for word, purpose in ((assignment["dictation"], "para ditar"),
-                                  (assignment["agent"], "para o agente"))
-            if word is not None
-        ]
+        phrases = custom_wake_phrases(assignment, self._wake_phrase_settings())
+        heard = []
+        for action, purpose in (("dictation", "para ditar"), ("agent", "para o agente")):
+            trigger = assignment[action]
+            if trigger is not None:
+                name = phrases.get(trigger) or WAKE_WORDS[trigger]["display_name"]
+                heard.append(f"“{name}” {purpose}")
+        missing_phrase = any(
+            self.config.get(f"wake_word_{action}") == WAKE_WORD_CUSTOM and assignment[action] is None
+            for action in ("dictation", "agent")
+        )
         if not self.wake_enabled.get():
             message = "Desligada. O microfone só abre enquanto você grava."
+        elif missing_phrase:
+            message = "Digite a frase personalizada e pressione Enter para salvar."
         elif not heard:
             message = "Escolha uma palavra para ditar ou para o agente."
         elif self.wake_loading:
@@ -2385,20 +2620,29 @@ class DitadoLocalApp:
         session_id = self._next_hotkey_session()
         if action == "agent":
             chat = self.agent_chat_window
-            if (chat and chat.is_open()
-                    and self.agent_chat_profile_path == str(self.history.path)):
-                # An open chat keeps the conversation; closing it starts a new one.
-                if chat.loading:
-                    self.status.set("Aguarde a resposta do agente antes de falar de novo.")
-                    self._update_wake_status()
-                    return
-                chat.window.deiconify()
-                chat._focus_input()
+            reusable = bool(chat and chat.is_open()
+                            and self.agent_chat_profile_path == str(self.history.path))
+            # An open chat keeps the conversation; closing it starts a new one.
+            if reusable and chat.loading:
+                self.status.set("Aguarde a resposta do agente antes de falar de novo.")
+                self._update_wake_status()
+                return
+            target = self.desktop.basic_focus()
+            if self._focus_is_ditado(target):
+                if reusable:
+                    chat.window.deiconify()
+                    chat._focus_input()
+                else:
+                    self._open_new_agent_chat()
+                    chat = self.agent_chat_window
+                if chat and chat.is_open():
+                    self._toggle_chat_recording(chat)
             else:
-                self._open_new_agent_chat()
-                chat = self.agent_chat_window
-            if chat and chat.is_open():
-                self._toggle_chat_recording(chat)
+                # Record at once, but read the selection before the chat takes
+                # focus so the copy reaches the user's app.
+                self.start_recording("agent_chat")
+                if self.recording and self.recording_mode == "agent_chat":
+                    self._capture_wake_agent_selection(session_id, target)
             mode, title = "agent_chat", "Agente ouvindo..."
             color, state = "#E879F9", "agent_recording"
         else:
@@ -2425,6 +2669,14 @@ class DitadoLocalApp:
         session_id, result = payload
         if self.active_hotkey_session != ("wake", session_id) or not self.recording:
             return
+        pending = self.wake_agent_selection
+        if pending is not None and pending["session"] == session_id:
+            if result != "no_speech":
+                # The chat opens once the selection is read; finish then.
+                pending["stop"] = result
+                return
+            self.wake_agent_selection = None
+            pending["cancel"].set()
         self.wake_endpoint = None
         chat = self.agent_chat_window if self.recording_mode == "agent_chat" else None
         if result == "no_speech":
@@ -2436,6 +2688,60 @@ class DitadoLocalApp:
             self._toggle_chat_recording(chat)
         else:
             self.stop_recording()
+
+    @staticmethod
+    def _focus_is_ditado(target):
+        """True when a Ditado window has focus, or nothing does: no selection to read."""
+        if not target.window:
+            return True
+        process_id = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(target.window, ctypes.byref(process_id))
+        return process_id.value == os.getpid()
+
+    def _capture_wake_agent_selection(self, session_id, target):
+        request = {"session": session_id, "cancel": threading.Event(), "stop": None}
+        self.wake_agent_selection = request
+
+        def capture():
+            text, error = "", ""
+            try:
+                text, _snapshot = self.desktop.capture_selection(target, request["cancel"])
+                if len(text) > 32000:
+                    raise ValueError("A seleção está longa demais. Selecione um trecho menor para enviar ao agente.")
+            except Exception as problem:
+                text = ""
+                error = str(problem) if isinstance(problem, ValueError) else ""
+            self.events.put(("wake_agent_selection", (request, text, error)))
+
+        threading.Thread(target=capture, daemon=True).start()
+        self.root.after(4000, lambda: self._finish_wake_agent_selection((request, "", "")))
+
+    def _finish_wake_agent_selection(self, payload):
+        request, text, error = payload
+        if self.wake_agent_selection is not request:
+            return
+        self.wake_agent_selection = None
+        request["cancel"].set()
+        if self.closing or not (self.recording and self.recording_mode == "agent_chat"):
+            return
+        chat = self.agent_chat_window
+        if (chat and chat.is_open() and not chat.loading
+                and self.agent_chat_profile_path == str(self.history.path)):
+            chat.prefill(text)
+            chat.window.deiconify()
+            chat._focus_input()
+        else:
+            if chat and chat.is_open():
+                # Detach first so closing it does not cancel this recording.
+                self.agent_chat_window = None
+                chat.close()
+            chat = self._create_agent_chat(text)
+        if error:
+            chat.show_error(error)
+        self.voice_chat_target = (self.agent_chat_entry_id, str(self.history.path))
+        chat.set_recording(True)
+        if request["stop"] is not None:
+            self._finish_wake_recording((request["session"], request["stop"]))
 
     def _settings_changed(self):
         self.config.set("auto_paste", bool(self.auto_paste.get()))
@@ -3291,6 +3597,9 @@ class DitadoLocalApp:
         )
         self.transcription_language.set(language["display_name"])
         self.history.limit = int(self.config.get("history_limit", 150))
+        self._select_saved_microphone()
+        self._refresh_wake_from_config()
+        self._apply_windows_audio_defaults()
         self._rebuild_corrections()
         self._rebuild_rules()
         self._rebuild_skills()
@@ -4342,6 +4651,9 @@ class DitadoLocalApp:
                 current._focus_input()
                 return
             current.close()
+        self._create_agent_chat(initial_text)
+
+    def _create_agent_chat(self, initial_text=""):
         self.agent_chat_entry_id = "draft:" + str(uuid.uuid4())
         self.agent_chat_profile_path = str(self.history.path)
         chat = AgentChatWindow(
@@ -4354,6 +4666,7 @@ class DitadoLocalApp:
         self.agent_chat_window = chat
         if initial_text:
             chat.prefill(initial_text)
+        return chat
 
     def _send_from_agent_chat(self, chat, instruction):
         if self.agent_chat_window is not chat or not chat.is_open():
@@ -4653,6 +4966,8 @@ class DitadoLocalApp:
                 self._start_wake_recording(payload)
             elif event == "wake_stop":
                 self._finish_wake_recording(payload)
+            elif event == "wake_agent_selection":
+                self._finish_wake_agent_selection(payload)
             elif event == "wake_engine_ready":
                 self._finish_wake_engine(payload)
             elif event == "wake_engine_failed":

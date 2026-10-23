@@ -2,6 +2,22 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.15 - 2026-10-23
+
+- Frase de ativação personalizada para ditar e para o agente: falas curtas
+  seguidas de pausa são transcritas localmente e comparadas com a frase digitada,
+  sem modelo treinado. Frases longas não são transcritas.
+- A palavra do agente envia ao chat o texto selecionado no app em foco, junto com
+  a pergunta falada, inclusive para continuar a conversa aberta.
+- Escolha da saída de som e do microfone padrão do Windows na aba Ditado; o Ditado
+  mantém esses dispositivos como padrão e avisa quando estão ausentes.
+- O PortAudio só é reiniciado quando o Windows informa microfones diferentes,
+  em vez de a cada gravação, evitando acionar o modo de chamada de caixas e
+  fones Bluetooth.
+- Todas as preferências sincronizam com a conta: 24, incluindo ativação por voz e
+  dispositivos. Preferência nunca escolhida em um PC atualizado não substitui a
+  escolha feita em outro.
+
 ## 0.4.14 - 2026-10-23
 
 - Ativação por voz com uma palavra para cada ação: por padrão `Hey Jarvis` dita

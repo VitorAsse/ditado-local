@@ -21,5 +21,7 @@
   "wake_word_enabled": false,
   "wake_word_dictation": "hey_jarvis",
   "wake_word_agent": "alexa",
+  "wake_phrase_dictation": "",
+  "wake_phrase_agent": "",
   "wake_word_sensitivity": "medium"
 }

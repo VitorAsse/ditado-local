@@ -5,13 +5,20 @@ classifier) with onnxruntime, without the openwakeword package and its
 training dependencies. Audio never leaves the computer and is not stored while
 listening; only a few seconds of features stay in memory.
 https://github.com/dscripka/openWakeWord
+
+Custom phrases have no trained model: short utterances followed by a pause are
+transcribed locally and compared with the phrase the user typed.
 """
 import ctypes
 import hashlib
 import os
 import queue
+import re
 import threading
 import time
+import unicodedata
+from collections import deque
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import numpy as np
@@ -50,7 +57,13 @@ WAKE_SENSITIVITIES = {
 DEFAULT_WAKE_SENSITIVITY = "medium"
 WAKE_WORD_OFF = "off"
 WAKE_WORD_OFF_LABEL = "Desligado"
+WAKE_WORD_CUSTOM = "custom"
+WAKE_WORD_CUSTOM_LABEL = "Personalizado"
+CUSTOM_TRIGGER_PREFIX = "custom_"
 DEFAULT_WAKE_ASSIGNMENT = {"dictation": "hey_jarvis", "agent": "alexa"}
+# Minimum similarity between what was heard and the typed phrase.
+PHRASE_SIMILARITY = {"low": 0.9, "medium": 0.8, "high": 0.7}
+MAX_PHRASE_CHARS = 40
 
 
 def resolve_wake_word(value):
@@ -61,24 +74,85 @@ def resolve_wake_sensitivity(value):
     return value if value in WAKE_SENSITIVITIES else DEFAULT_WAKE_SENSITIVITY
 
 
-def resolve_wake_assignment(dictation, agent):
-    """Return {action: word or None}; one word never triggers both actions."""
+def normalize_phrase(text):
+    """Lowercase words without accents or punctuation, for comparing speech."""
+    text = unicodedata.normalize("NFKD", str(text or "").casefold())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return " ".join(re.findall(r"[a-z0-9]+", text))
+
+
+def validate_wake_phrase(text):
+    """Return (clean phrase, error message or None)."""
+    clean = " ".join(str(text or "").split())
+    if len(clean) > MAX_PHRASE_CHARS:
+        return clean, f"Use uma frase de até {MAX_PHRASE_CHARS} caracteres."
+    if len(normalize_phrase(clean).replace(" ", "")) < 5:
+        return clean, "Use uma frase com duas ou mais palavras ou sílabas fortes, como “Ok computador”."
+    return clean, None
+
+
+def phrase_score(heard, phrase):
+    """Similarity from 0 to 1 between a short utterance and the custom phrase.
+
+    A sentence that merely contains the phrase is ordinary speech, so the
+    utterance may have at most two extra words.
+    """
+    heard, phrase = normalize_phrase(heard), normalize_phrase(phrase)
+    if not heard or not phrase:
+        return 0.0
+    words, size = heard.split(), len(phrase.split())
+    if len(words) > size + 2:
+        return 0.0
+    best = SequenceMatcher(None, heard, phrase).ratio()
+    for start in range(len(words) - size + 1):
+        window = " ".join(words[start:start + size])
+        best = max(best, SequenceMatcher(None, window, phrase).ratio())
+    return best
+
+
+def resolve_wake_assignment(dictation, agent, phrases=None):
+    """Return {action: trigger or None}; one trigger never serves both actions.
+
+    Triggers are built-in word keys or custom_<action> for a typed phrase.
+    """
+    phrases = phrases or {}
     assignment = {}
     for action, value in (("dictation", dictation), ("agent", agent)):
         if value == WAKE_WORD_OFF:
             assignment[action] = None
+        elif value == WAKE_WORD_CUSTOM:
+            valid = validate_wake_phrase(phrases.get(action))[1] is None
+            assignment[action] = CUSTOM_TRIGGER_PREFIX + action if valid else None
         elif value in WAKE_WORDS:
             assignment[action] = value
         else:
             assignment[action] = DEFAULT_WAKE_ASSIGNMENT[action]
     if assignment["agent"] is not None and assignment["agent"] == assignment["dictation"]:
         assignment["agent"] = None
+    if (assignment["agent"] and assignment["dictation"]
+            and assignment["agent"].startswith(CUSTOM_TRIGGER_PREFIX)
+            and assignment["dictation"].startswith(CUSTOM_TRIGGER_PREFIX)
+            and normalize_phrase(phrases.get("agent")) == normalize_phrase(phrases.get("dictation"))):
+        assignment["agent"] = None
     return assignment
 
 
 def wake_word_actions(assignment):
-    """Map each listened word to its action."""
+    """Map each listened trigger to its action."""
     return {word: action for action, word in assignment.items() if word is not None}
+
+
+def builtin_wake_words(assignment):
+    return tuple(sorted(word for word in assignment.values() if word in WAKE_WORDS))
+
+
+def custom_wake_phrases(assignment, phrases):
+    """{trigger: phrase} for the actions that use a typed phrase."""
+    return {
+        trigger: " ".join(str(phrases.get(action) or "").split())
+        for action, trigger in assignment.items()
+        if trigger and trigger.startswith(CUSTOM_TRIGGER_PREFIX)
+    }
 
 
 def _sha256(path):
@@ -218,6 +292,7 @@ class WakeWordEngine:
     def __init__(self, detector, threshold, on_detect, resampler_factory=None):
         self.detector = detector
         self.threshold = float(threshold)
+        self.thresholds = {key: item["threshold"] for key, item in WAKE_SENSITIVITIES.items()}
         self.on_detect = on_detect
         self.resampler_factory = resampler_factory or _soxr_stream
         self.queue = queue.SimpleQueue()
@@ -238,6 +313,9 @@ class WakeWordEngine:
     def close(self):
         self.closed = True
         self.queue.put(None)
+
+    def set_sensitivity(self, sensitivity):
+        self.threshold = float(self.thresholds[resolve_wake_sensitivity(sensitivity)])
 
     def _run(self):
         generation, resampler, rate = 0, None, None
@@ -268,6 +346,173 @@ class WakeWordEngine:
                 self.detector.reset()
                 resampler, rate = None, None
                 self.on_detect(best[1], best[0])
+
+
+class SpeechBursts:
+    """Splits 16 kHz audio into short utterances that end with a pause.
+
+    Utterances longer than max_seconds are ordinary speech and are dropped
+    without being kept in memory.
+    """
+
+    FRAME = 320  # 20 ms
+
+    def __init__(self, rate=WAKE_SAMPLE_RATE, min_seconds=0.3, max_seconds=2.5,
+                 pause_seconds=0.45, preroll_seconds=0.2, min_threshold=0.008):
+        self.min_speech = round(min_seconds * rate)
+        self.max_samples = round(max_seconds * rate)
+        self.pause = round(pause_seconds * rate)
+        self.min_threshold = min_threshold
+        self.preroll = deque(maxlen=max(1, round(preroll_seconds * rate / self.FRAME)))
+        self.noise = min_threshold / 3.0
+        self.pending = np.zeros(0, dtype=np.float32)
+        self._idle()
+
+    def _idle(self):
+        self.active = False
+        self.frames = []
+        self.length = 0
+        self.speech = 0
+        self.silence = 0
+        self.too_long = False
+
+    def feed(self, samples):
+        """Feed float audio in [-1, 1]; return the utterances that just ended."""
+        self.pending = np.concatenate((self.pending, np.asarray(samples, dtype=np.float32)))
+        bursts = []
+        while self.pending.size >= self.FRAME:
+            frame, self.pending = self.pending[:self.FRAME], self.pending[self.FRAME:]
+            burst = self._frame(frame)
+            if burst is not None:
+                bursts.append(burst)
+        return bursts
+
+    def _frame(self, frame):
+        rms = float(np.sqrt(np.mean(np.square(frame))))
+        loud = rms >= max(self.min_threshold, self.noise * 3.0)
+        if not loud:
+            self.noise = self.noise * 0.95 + rms * 0.05
+        if not self.active:
+            if not loud:
+                self.preroll.append(frame)
+                return None
+            self.active = True
+            self.frames = list(self.preroll)
+            self.length = sum(item.size for item in self.frames)
+            self.preroll.clear()
+        if not self.too_long:
+            self.frames.append(frame)
+        self.length += frame.size
+        if loud:
+            self.speech += frame.size
+            self.silence = 0
+        else:
+            self.silence += frame.size
+        if self.length - self.silence > self.max_samples:
+            self.too_long, self.frames = True, []
+        if self.silence < self.pause:
+            return None
+        burst = None
+        if not self.too_long and self.speech >= self.min_speech:
+            burst = np.concatenate(self.frames)
+        self._idle()
+        return burst
+
+
+class PhraseSpotter:
+    """Background worker that recognizes typed phrases in short utterances.
+
+    transcribe(audio_16k) returns the text heard; it runs only for utterances
+    of up to a few seconds followed by a pause, never for continuous speech.
+    on_detect receives the trigger and its similarity.
+    """
+
+    def __init__(self, transcribe, phrases, threshold, on_detect, resampler_factory=None):
+        self.transcribe = transcribe
+        self.phrases = dict(phrases)
+        self.threshold = float(threshold)
+        self.thresholds = dict(PHRASE_SIMILARITY)
+        self.on_detect = on_detect
+        self.resampler_factory = resampler_factory or _soxr_stream
+        self.queue = queue.SimpleQueue()
+        self.generation = 0
+        self.closed = False
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def feed(self, samples, sample_rate):
+        """Called from the audio callback; never blocks."""
+        if not self.closed:
+            self.queue.put((self.generation, int(sample_rate), np.array(samples, dtype=np.float32)))
+
+    def reset(self):
+        self.generation += 1
+        self.queue.put(("reset", self.generation))
+
+    def close(self):
+        self.closed = True
+        self.queue.put(None)
+
+    def set_sensitivity(self, sensitivity):
+        self.threshold = float(self.thresholds[resolve_wake_sensitivity(sensitivity)])
+
+    def match(self, text):
+        best = max(
+            ((phrase_score(text, phrase), trigger) for trigger, phrase in self.phrases.items()),
+            default=(0.0, None),
+        )
+        return best if best[0] >= self.threshold else (best[0], None)
+
+    def _run(self):
+        generation, resampler, rate, bursts = 0, None, None, SpeechBursts()
+        while True:
+            item = self.queue.get()
+            if item is None:
+                return
+            if item[0] == "reset":
+                generation, resampler, rate, bursts = item[1], None, None, SpeechBursts()
+                continue
+            item_generation, sample_rate, samples = item
+            if item_generation != generation:
+                continue
+            if sample_rate != rate:
+                rate = sample_rate
+                resampler = None if rate == WAKE_SAMPLE_RATE else self.resampler_factory(rate)
+            audio = samples if resampler is None else resampler(samples)
+            for burst in bursts.feed(np.clip(audio, -1.0, 1.0)):
+                if item_generation != self.generation:
+                    break
+                try:
+                    score, trigger = self.match(self.transcribe(burst) or "")
+                except Exception:
+                    continue
+                if trigger is not None and item_generation == self.generation:
+                    bursts = SpeechBursts()
+                    self.on_detect(trigger, score)
+                    break
+
+
+class WakeListeners:
+    """Feeds one microphone stream to every active wake listener."""
+
+    def __init__(self, listeners):
+        self.listeners = list(listeners)
+
+    def feed(self, samples, sample_rate):
+        for listener in self.listeners:
+            listener.feed(samples, sample_rate)
+
+    def reset(self):
+        for listener in self.listeners:
+            listener.reset()
+
+    def close(self):
+        for listener in self.listeners:
+            listener.close()
+
+    def set_sensitivity(self, sensitivity):
+        for listener in self.listeners:
+            listener.set_sensitivity(sensitivity)
 
 
 def _soxr_stream(input_rate):

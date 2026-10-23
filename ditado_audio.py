@@ -26,6 +26,61 @@ def default_playback_devices_factory():
     return devices
 
 
+def audio_endpoints(flow):
+    """Active Windows endpoints as [(id, name)], flow 'render' or 'capture'."""
+    from pycaw.constants import DEVICE_STATE, EDataFlow
+    from pycaw.pycaw import AudioUtilities
+
+    data_flow = EDataFlow.eRender if flow == "render" else EDataFlow.eCapture
+    devices = AudioUtilities.GetAllDevices(
+        data_flow=data_flow.value,
+        device_state=DEVICE_STATE.ACTIVE.value,
+    )
+    return sorted(
+        ((device.id, device.FriendlyName) for device in devices if device.FriendlyName),
+        key=lambda item: item[1].casefold(),
+    )
+
+
+def audio_endpoint_names(flow):
+    try:
+        return [name for _id, name in audio_endpoints(flow)]
+    except Exception:
+        return []
+
+
+def capture_endpoint_signature():
+    """Microphones Windows reports, read without probing drivers; None if unknown."""
+    try:
+        return tuple(sorted(device_id for device_id, _name in audio_endpoints("capture")))
+    except Exception:
+        return None
+
+
+def set_default_endpoint(flow, name):
+    """Make the named endpoint the Windows default for every role.
+
+    Returns False when no active endpoint has that name.
+    """
+    from pycaw.constants import EDataFlow, ERole
+    from pycaw.pycaw import AudioUtilities
+
+    device_id = next((item_id for item_id, item_name in audio_endpoints(flow) if item_name == name), None)
+    if device_id is None:
+        return False
+    data_flow = EDataFlow.eRender if flow == "render" else EDataFlow.eCapture
+    enumerator = AudioUtilities.GetDeviceEnumerator()
+    for role_name in PLAYBACK_ROLE_NAMES:
+        role = getattr(ERole, role_name)
+        try:
+            current = enumerator.GetDefaultAudioEndpoint(data_flow.value, role.value).GetId()
+        except Exception:
+            current = ""
+        if str(current).casefold() != str(device_id).casefold():
+            AudioUtilities.SetDefaultDevice(device_id, roles=[role])
+    return True
+
+
 def default_playback_devices_restorer(devices):
     from pycaw.constants import ERole
     from pycaw.pycaw import AudioUtilities

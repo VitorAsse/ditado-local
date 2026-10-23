@@ -48,10 +48,13 @@ A conta da nuvem é opcional e o ditado continua funcionando sem ela.
 
 ## Recuperação das configurações
 
-As 16 preferências incluem nome do microfone, inicialização com o Windows,
-perfil de transcrição, tipo de processamento, vocabulário personalizado, modelo do
-agente e tempo de permanência em memória. A atualização inclui automaticamente os
-valores já existentes na próxima sincronização, sem migração de schema.
+Todas as 24 preferências sincronizam, incluindo nome do microfone, inicialização com
+o Windows, perfil de transcrição, tipo de processamento, vocabulário personalizado,
+modelo do agente, tempo de permanência em memória, ativação por voz (palavras, frases
+personalizadas e sensibilidade), saída de som e microfone padrão do Windows. A
+atualização inclui automaticamente os valores já existentes na próxima sincronização,
+sem migração de schema. Uma preferência nova que ainda está no valor padrão recebe
+data mínima, para não substituir uma escolha já feita em outro PC.
 Esses campos pertencem à conta e também sincronizam entre seus PCs; a alteração
 mais recente prevalece. Eles não são copiados ao entrar em outra conta.
 
@@ -66,8 +69,7 @@ A chave de recuperação deve permanecer guardada fora do PC.
 - arquivos dos modelos, cache e bibliotecas de GPU;
 - tokens ou a chave mestra sem a proteção local do Windows.
 
-Nome do microfone, inicialização com o Windows e perfil de transcrição são escolhas
-específicas do dispositivo e ficam locais. Áudio bruto, buffers de gravação, rascunhos
+Áudio bruto, buffers de gravação, rascunhos
 ainda não enviados/salvos e estado temporário das janelas não fazem parte do histórico.
 O código do app, incluindo o prompt base, é distribuído por atualização/release;
 preferências editáveis de redação devem ser cadastradas como regras ou skills.
