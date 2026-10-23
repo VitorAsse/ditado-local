@@ -128,9 +128,9 @@ class AppConfig:
         # Device-local: an always-open microphone is a per-computer decision.
         # Not synced, so the 16 cloud preferences stay unchanged.
         "wake_word_enabled": False,
-        "wake_word": "hey_jarvis",
+        "wake_word_dictation": "hey_jarvis",
+        "wake_word_agent": "alexa",
         "wake_word_sensitivity": "medium",
-        "wake_word_action": "dictation",
     }
 
     SYNCED_PREFERENCE_KEYS = {
@@ -151,7 +151,7 @@ class AppConfig:
         "transcription_compute_type", "transcription_vocabulary", "agent_model", "agent_keep_alive",
     }
     DEVICE_LOCAL_PREFERENCE_KEYS = {
-        "wake_word_enabled", "wake_word", "wake_word_sensitivity", "wake_word_action",
+        "wake_word_enabled", "wake_word_dictation", "wake_word_agent", "wake_word_sensitivity",
     }
 
     def __init__(self, path=None):
@@ -196,6 +196,21 @@ class AppConfig:
                 changed = True
         return changed
 
+    def _migrate_wake_words(self):
+        # 0.4.13 stored one word and one action; each action now has its own word.
+        if "wake_word" not in self.data and "wake_word_action" not in self.data:
+            return False
+        word = self.data.pop("wake_word", None)
+        action = self.data.pop("wake_word_action", None)
+        if word not in {"hey_jarvis", "alexa"}:
+            word = "hey_jarvis"
+        other = "alexa" if word == "hey_jarvis" else "hey_jarvis"
+        if action == "agent":
+            self.data["wake_word_dictation"], self.data["wake_word_agent"] = other, word
+        else:
+            self.data["wake_word_dictation"], self.data["wake_word_agent"] = word, other
+        return True
+
     def load(self):
         with self.lock:
             if not self.path.exists():
@@ -206,7 +221,8 @@ class AppConfig:
                 loaded = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     self.data.update(loaded)
-                if self._normalize_sync_metadata():
+                migrated = self._migrate_wake_words()
+                if self._normalize_sync_metadata() or migrated:
                     self.save()
             except (OSError, json.JSONDecodeError):
                 self.data = copy.deepcopy(self.DEFAULTS)
@@ -227,6 +243,7 @@ class AppConfig:
                 self.load()
             elif isinstance(initial_data, dict):
                 self.data.update(copy.deepcopy(initial_data))
+                self._migrate_wake_words()
                 self._normalize_sync_metadata()
                 self.save()
             else:

@@ -108,13 +108,18 @@ após oito segundos e também funciona para resultados do agente.
 ### Ativação por voz
 
 Na aba **Ditado > Ativação por voz**, ligue o recurso para começar a gravar sem
-teclado: diga a palavra de ativação (`Hey Jarvis` ou `Alexa`), espere o aviso
-`Ouvindo...` e faça o pedido. A gravação termina sozinha depois de uma pausa de
-cerca de 1,2 segundo; `Esc` ou o botão `Cancelar` descartam o áudio. Se nada for
-dito em seis segundos, a gravação é descartada.
+teclado. Cada ação tem sua palavra, e as duas ficam escutando ao mesmo tempo:
 
-- **Depois de ouvir:** `Ditar no aplicativo em foco` funciona como `Ctrl + Espaço`;
-  `Perguntar ao agente` abre uma conversa nova e envia a pergunta falada.
+- **Para ditar no app em foco** (padrão `Hey Jarvis`): funciona como `Ctrl + Espaço`.
+- **Para falar com o agente** (padrão `Alexa`): abre o chat e envia a pergunta falada.
+  Com o chat aberto, a palavra continua a mesma conversa; feche o chat para começar
+  outra. Enquanto o agente responde, a palavra é ignorada.
+
+Escolher para uma ação a palavra da outra troca as duas; `Desligado` desativa só
+aquela ação. Diga a palavra, espere o aviso `Ouvindo...` e fale. A gravação termina
+sozinha depois de uma pausa de cerca de 1,2 segundo; `Esc` ou o botão `Cancelar`
+descartam o áudio. Se nada for dito em seis segundos, a gravação é descartada.
+
 - **Sensibilidade:** `Alta` aceita pronúncias menos claras e dispara por engano com
   mais facilidade; `Baixa` exige uma pronúncia mais clara.
 - O menu da bandeja tem `Ativação por voz` para ligar ou desligar rapidamente.

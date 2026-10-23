@@ -30,9 +30,10 @@ from ditado_wakeword import (
     WakeWordEngine,
     ensure_models,
     required_model_files,
-    resolve_wake_action,
+    resolve_wake_assignment,
     resolve_wake_sensitivity,
     resolve_wake_word,
+    wake_word_actions,
 )
 
 
@@ -51,11 +52,13 @@ class FakeSession:
         return [self._run(value)]
 
 
-def fake_detector(score=0.9):
+def fake_detector(score=0.9, other_score=0.2):
     melspec = FakeSession("audio", lambda x: np.zeros((1, 1, 8, 32), dtype=np.float32))
     embedding = FakeSession("mel", lambda x: np.ones((1, 1, 1, 96), dtype=np.float32))
     wakeword = FakeSession("features", lambda x: np.array([[score]], dtype=np.float32))
-    return WakeWordDetector(melspec, embedding, wakeword), (melspec, embedding, wakeword)
+    other = FakeSession("x", lambda x: np.array([[other_score]], dtype=np.float32))
+    detector = WakeWordDetector(melspec, embedding, {"hey_jarvis": wakeword, "alexa": other})
+    return detector, (melspec, embedding, wakeword)
 
 
 class ModelDownloadTests(unittest.TestCase):
@@ -94,10 +97,34 @@ class ModelDownloadTests(unittest.TestCase):
                 ensure_models(directory, "alexa", fetch=fetch)
             self.assertEqual([], list(Path(directory).iterdir()))
 
+    def test_two_words_share_one_set_of_feature_models(self):
+        files = required_model_files(["hey_jarvis", "alexa"])
+        self.assertEqual(4, len(files))
+        self.assertEqual(files, required_model_files(("alexa", "hey_jarvis")))
+
     def test_unknown_choices_fall_back_to_defaults(self):
         self.assertEqual("hey_jarvis", resolve_wake_word("ok_google"))
         self.assertEqual("medium", resolve_wake_sensitivity(None))
-        self.assertEqual("dictation", resolve_wake_action("delete_files"))
+        self.assertEqual(
+            {"dictation": "hey_jarvis", "agent": "alexa"},
+            resolve_wake_assignment("ok_google", None),
+        )
+
+
+class AssignmentTests(unittest.TestCase):
+    def test_each_action_has_its_own_word_or_none(self):
+        self.assertEqual(
+            {"dictation": "alexa", "agent": None}, resolve_wake_assignment("alexa", "off"),
+        )
+        self.assertEqual(
+            {"alexa": "dictation", "hey_jarvis": "agent"},
+            wake_word_actions(resolve_wake_assignment("alexa", "hey_jarvis")),
+        )
+
+    def test_same_word_never_triggers_both_actions(self):
+        self.assertEqual(
+            {"dictation": "alexa", "agent": None}, resolve_wake_assignment("alexa", "alexa"),
+        )
 
 
 class DetectorTests(unittest.TestCase):
@@ -108,8 +135,11 @@ class DetectorTests(unittest.TestCase):
             scores += detector.process(np.zeros(CHUNK_SAMPLES // 2, dtype=np.float32))
             scores += detector.process(np.zeros(CHUNK_SAMPLES // 2, dtype=np.float32))
         self.assertEqual(FEATURE_WINDOW + WARMUP_PREDICTIONS + 3, len(scores))
-        self.assertAlmostEqual(0.9, scores[-1], places=5)
-        self.assertEqual(0.0, scores[FEATURE_WINDOW + WARMUP_PREDICTIONS - 2])
+        self.assertAlmostEqual(0.9, scores[-1]["hey_jarvis"], places=5)
+        self.assertAlmostEqual(0.2, scores[-1]["alexa"], places=5)
+        self.assertEqual(
+            {"hey_jarvis": 0.0, "alexa": 0.0}, scores[FEATURE_WINDOW + WARMUP_PREDICTIONS - 2],
+        )
         self.assertEqual((1, CHUNK_SAMPLES + 480), melspec.inputs[-1].shape)
         self.assertEqual((1, 76, 32, 1), embedding.inputs[-1].shape)
         self.assertEqual((1, FEATURE_WINDOW, 96), wakeword.inputs[-1].shape)
@@ -117,9 +147,10 @@ class DetectorTests(unittest.TestCase):
     def test_reset_requires_a_new_warmup(self):
         detector, _sessions = fake_detector(0.9)
         audio = np.zeros(CHUNK_SAMPLES * (FEATURE_WINDOW + WARMUP_PREDICTIONS + 2), dtype=np.float32)
-        self.assertAlmostEqual(0.9, max(detector.process(audio)), places=5)
+        self.assertAlmostEqual(0.9, detector.process(audio)[-1]["hey_jarvis"], places=5)
         detector.reset()
-        self.assertEqual(0.0, max(detector.process(audio[: CHUNK_SAMPLES * 4])))
+        steps = detector.process(audio[: CHUNK_SAMPLES * 4])
+        self.assertEqual(0.0, max(step["hey_jarvis"] for step in steps))
 
 
 class EngineTests(unittest.TestCase):
@@ -127,18 +158,21 @@ class EngineTests(unittest.TestCase):
         detected = threading.Event()
         scores = []
         detector = Mock()
-        detector.process.side_effect = lambda audio: [0.8] if audio.max() > 1000 else [0.1]
+        detector.process.side_effect = lambda audio: (
+            [{"hey_jarvis": 0.3, "alexa": 0.8}] if audio.max() > 1000
+            else [{"hey_jarvis": 0.1, "alexa": 0.1}]
+        )
         engine = WakeWordEngine(
             detector,
             0.5,
-            lambda score: (scores.append(score), detected.set()),
+            lambda word, score: (scores.append((word, score)), detected.set()),
             resampler_factory=lambda rate: (lambda samples: samples),
         )
         try:
             engine.feed(np.full(160, 0.01, dtype=np.float32), 16_000)
             engine.feed(np.full(160, 0.5, dtype=np.float32), 48_000)
             self.assertTrue(detected.wait(2))
-            self.assertEqual([0.8], scores)
+            self.assertEqual([("alexa", 0.8)], scores)
             detector.reset.assert_called()
         finally:
             engine.close()
@@ -147,8 +181,8 @@ class EngineTests(unittest.TestCase):
     def test_threshold_change_applies_to_following_audio(self):
         detected = threading.Event()
         detector = Mock()
-        detector.process.return_value = [0.4]
-        engine = WakeWordEngine(detector, 0.5, lambda score: detected.set())
+        detector.process.return_value = [{"hey_jarvis": 0.4}]
+        engine = WakeWordEngine(detector, 0.5, lambda _word, _score: detected.set())
         try:
             engine.feed(np.zeros(160, dtype=np.float32), 16_000)
             self.assertFalse(detected.wait(0.3))
@@ -220,18 +254,35 @@ class RetryClockTests(unittest.TestCase):
 class WakeConfigTests(unittest.TestCase):
     def test_wake_preferences_default_off_and_stay_on_this_device(self):
         self.assertFalse(AppConfig.DEFAULTS["wake_word_enabled"])
-        for key in ("wake_word_enabled", "wake_word", "wake_word_sensitivity", "wake_word_action"):
+        for key in ("wake_word_enabled", "wake_word_dictation", "wake_word_agent",
+                    "wake_word_sensitivity"):
             self.assertIn(key, AppConfig.DEVICE_LOCAL_PREFERENCE_KEYS)
             self.assertNotIn(key, AppConfig.SYNCED_PREFERENCE_KEYS)
         self.assertEqual(16, len(AppConfig.SYNCED_PREFERENCE_KEYS))
 
+    def test_single_word_setting_from_0_4_13_becomes_two_words(self):
+        for action, expected in (("agent", ("alexa", "hey_jarvis")),
+                                 ("dictation", ("hey_jarvis", "alexa"))):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "config.json"
+                path.write_text(
+                    '{"wake_word": "hey_jarvis", "wake_word_action": "%s"}' % action,
+                    encoding="utf-8",
+                )
+                config = AppConfig(path)
+                self.assertEqual(
+                    expected,
+                    (config.get("wake_word_dictation"), config.get("wake_word_agent")),
+                )
+                self.assertNotIn("wake_word_action", AppConfig(path).data)
 
-def wake_app(action="dictation"):
+
+def wake_app(dictation="hey_jarvis", agent="alexa"):
     app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
     app.config = Mock()
     app.config.get.side_effect = lambda key, default=None: {
-        "wake_word_action": action,
-        "wake_word": "hey_jarvis",
+        "wake_word_dictation": dictation,
+        "wake_word_agent": agent,
     }.get(key, default)
     app.recording = False
     app.processing = False
@@ -268,7 +319,7 @@ class WakeRecordingTests(unittest.TestCase):
         app = wake_app()
         listener = app.wake_stream
 
-        app._start_wake_recording()
+        app._start_wake_recording("hey_jarvis")
 
         listener.close.assert_called_once_with()
         self.assertIsNone(app.wake_stream)
@@ -280,26 +331,33 @@ class WakeRecordingTests(unittest.TestCase):
     def test_detection_is_ignored_while_busy(self):
         app = wake_app()
         app.processing = True
-        app._start_wake_recording()
+        app._start_wake_recording("hey_jarvis")
         app.start_recording.assert_not_called()
+
+    def test_word_without_action_is_ignored(self):
+        app = wake_app(agent="off")
+        listener = app.wake_stream
+        app._start_wake_recording("alexa")
+        app.start_recording.assert_not_called()
+        self.assertIs(listener, app.wake_stream)
 
     def test_pause_after_speech_transcribes(self):
         app = wake_app()
-        app._start_wake_recording()
+        app._start_wake_recording("hey_jarvis")
         app._finish_wake_recording((1, "end"))
         app.stop_recording.assert_called_once_with()
         self.assertIsNone(app.wake_endpoint)
 
     def test_silence_after_wake_word_discards_recording(self):
         app = wake_app()
-        app._start_wake_recording()
+        app._start_wake_recording("hey_jarvis")
         app._finish_wake_recording((1, "no_speech"))
         app._cancel_recording.assert_called_once_with()
         app.stop_recording.assert_not_called()
 
     def test_stale_endpoint_is_ignored_after_hotkey_takes_over(self):
         app = wake_app()
-        app._start_wake_recording()
+        app._start_wake_recording("hey_jarvis")
         app.active_hotkey_session = ("dictation", 7)
         app._finish_wake_recording((1, "end"))
         app.stop_recording.assert_not_called()
@@ -325,23 +383,64 @@ class WakeRecordingTests(unittest.TestCase):
         app._capture_audio(np.zeros((480, 1), dtype=np.float32), 480, None, None)
         self.assertEqual(("wake_stop", (5, "end")), app.events.get_nowait())
 
-    def test_agent_action_opens_chat_and_records_question(self):
-        app = wake_app("agent")
+    def agent_app(self):
+        app = wake_app()
+        app.history = SimpleNamespace(path="perfil.json")
+        app.agent_chat_profile_path = "perfil.json"
         chat = Mock()
         chat.is_open.return_value = True
+        chat.loading = False
 
         def open_chat():
             app.agent_chat_window = chat
 
         app._open_new_agent_chat = Mock(side_effect=open_chat)
         app._toggle_chat_recording = Mock(side_effect=lambda _chat: app.start_recording("agent_chat"))
+        return app, chat
 
-        app._start_wake_recording()
+    def test_agent_word_opens_chat_and_records_question(self):
+        app, chat = self.agent_app()
+
+        app._start_wake_recording("alexa")
+        app._open_new_agent_chat.assert_called_once_with()
         app._toggle_chat_recording.assert_called_once_with(chat)
         self.assertEqual(("wake", 1), app.active_hotkey_session)
 
         app._finish_wake_recording((1, "end"))
         self.assertEqual(2, app._toggle_chat_recording.call_count)
+
+    def test_agent_word_continues_the_open_chat(self):
+        app, chat = self.agent_app()
+        app.agent_chat_window = chat
+
+        app._start_wake_recording("alexa")
+
+        app._open_new_agent_chat.assert_not_called()
+        chat._focus_input.assert_called_once_with()
+        app._toggle_chat_recording.assert_called_once_with(chat)
+        self.assertEqual("agent_chat", app.recording_mode)
+
+    def test_agent_word_waits_while_the_agent_answers(self):
+        app, chat = self.agent_app()
+        app.agent_chat_window = chat
+        chat.loading = True
+
+        app._start_wake_recording("alexa")
+
+        app._open_new_agent_chat.assert_not_called()
+        app.start_recording.assert_not_called()
+        self.assertIn("Aguarde", app.status.set.call_args.args[0])
+
+    def test_closed_chat_starts_a_new_conversation(self):
+        app, chat = self.agent_app()
+        closed = Mock()
+        closed.is_open.return_value = False
+        app.agent_chat_window = closed
+
+        app._start_wake_recording("alexa")
+
+        app._open_new_agent_chat.assert_called_once_with()
+        app._toggle_chat_recording.assert_called_once_with(chat)
 
 
 class WakeListenerLifecycleTests(unittest.TestCase):

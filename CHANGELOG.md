@@ -2,6 +2,17 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.14 - 2026-10-23
+
+- Ativação por voz com uma palavra para cada ação: por padrão `Hey Jarvis` dita
+  no app em foco e `Alexa` fala com o agente, as duas escutadas ao mesmo tempo.
+  `Desligado` desativa uma ação; escolher a palavra da outra troca as duas.
+- A palavra do agente continua a conversa do chat aberto em vez de abrir uma
+  nova e perder o contexto; fechar o chat começa outra conversa. Durante a
+  resposta do agente, a palavra é ignorada com aviso.
+- A configuração de palavra única da 0.4.13 é convertida automaticamente,
+  mantendo a palavra escolhida na mesma ação.
+
 ## 0.4.13 - 2026-10-23
 
 - Ativação por voz opcional na aba Ditado: `Hey Jarvis` ou `Alexa` iniciam o

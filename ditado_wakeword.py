@@ -48,11 +48,9 @@ WAKE_SENSITIVITIES = {
     "high": {"display_name": "Alta", "threshold": 0.35},
 }
 DEFAULT_WAKE_SENSITIVITY = "medium"
-WAKE_ACTIONS = {
-    "dictation": "Ditar no aplicativo em foco",
-    "agent": "Perguntar ao agente",
-}
-DEFAULT_WAKE_ACTION = "dictation"
+WAKE_WORD_OFF = "off"
+WAKE_WORD_OFF_LABEL = "Desligado"
+DEFAULT_WAKE_ASSIGNMENT = {"dictation": "hey_jarvis", "agent": "alexa"}
 
 
 def resolve_wake_word(value):
@@ -63,8 +61,24 @@ def resolve_wake_sensitivity(value):
     return value if value in WAKE_SENSITIVITIES else DEFAULT_WAKE_SENSITIVITY
 
 
-def resolve_wake_action(value):
-    return value if value in WAKE_ACTIONS else DEFAULT_WAKE_ACTION
+def resolve_wake_assignment(dictation, agent):
+    """Return {action: word or None}; one word never triggers both actions."""
+    assignment = {}
+    for action, value in (("dictation", dictation), ("agent", agent)):
+        if value == WAKE_WORD_OFF:
+            assignment[action] = None
+        elif value in WAKE_WORDS:
+            assignment[action] = value
+        else:
+            assignment[action] = DEFAULT_WAKE_ASSIGNMENT[action]
+    if assignment["agent"] is not None and assignment["agent"] == assignment["dictation"]:
+        assignment["agent"] = None
+    return assignment
+
+
+def wake_word_actions(assignment):
+    """Map each listened word to its action."""
+    return {word: action for action, word in assignment.items() if word is not None}
 
 
 def _sha256(path):
@@ -85,18 +99,23 @@ def _default_fetch(url, destination):
                 handle.write(block)
 
 
-def required_model_files(wake_word):
-    entry = WAKE_WORDS[resolve_wake_word(wake_word)]
-    return {**FEATURE_MODELS, entry["file"]: entry["sha256"]}
+def required_model_files(wake_words):
+    if isinstance(wake_words, str):
+        wake_words = [wake_words]
+    files = dict(FEATURE_MODELS)
+    for word in wake_words:
+        entry = WAKE_WORDS[resolve_wake_word(word)]
+        files[entry["file"]] = entry["sha256"]
+    return files
 
 
-def ensure_models(directory, wake_word, fetch=None):
+def ensure_models(directory, wake_words, fetch=None):
     """Download missing models once and verify every file by SHA-256."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     fetch = fetch or _default_fetch
     paths = {}
-    for name, expected in required_model_files(wake_word).items():
+    for name, expected in required_model_files(wake_words).items():
         path = directory / name
         if not path.exists() or _sha256(path) != expected:
             temporary = path.with_suffix(path.suffix + ".download")
@@ -114,19 +133,25 @@ def ensure_models(directory, wake_word, fetch=None):
 
 
 class WakeWordDetector:
-    """Streaming openWakeWord inference over 16 kHz audio in int16 scale."""
+    """Streaming openWakeWord inference over 16 kHz audio in int16 scale.
 
-    def __init__(self, melspec_session, embedding_session, wakeword_session):
+    Several wake words share the melspectrogram and embedding steps; only the
+    small classifier runs once per word.
+    """
+
+    def __init__(self, melspec_session, embedding_session, wakeword_sessions):
         self.melspec = melspec_session
         self.embedding = embedding_session
-        self.wakeword = wakeword_session
+        self.wakewords = dict(wakeword_sessions)
         self.melspec_input = melspec_session.get_inputs()[0].name
         self.embedding_input = embedding_session.get_inputs()[0].name
-        self.wakeword_input = wakeword_session.get_inputs()[0].name
+        self.wakeword_inputs = {
+            word: session.get_inputs()[0].name for word, session in self.wakewords.items()
+        }
         self.reset()
 
     @classmethod
-    def from_files(cls, paths, wake_word):
+    def from_files(cls, paths, wake_words):
         import onnxruntime as ort
 
         options = ort.SessionOptions()
@@ -143,7 +168,7 @@ class WakeWordDetector:
         return cls(
             session("melspectrogram.onnx"),
             session("embedding_model.onnx"),
-            session(WAKE_WORDS[resolve_wake_word(wake_word)]["file"]),
+            {word: session(WAKE_WORDS[word]["file"]) for word in wake_words},
         )
 
     def reset(self):
@@ -154,7 +179,7 @@ class WakeWordDetector:
         self.predictions = 0
 
     def process(self, samples):
-        """Feed int16-scaled float samples; return one score per 80 ms step."""
+        """Feed int16-scaled float samples; return {word: score} per 80 ms step."""
         self.pending = np.concatenate((self.pending, np.asarray(samples, dtype=np.float32)))
         scores = []
         while self.pending.size >= CHUNK_SAMPLES:
@@ -163,9 +188,10 @@ class WakeWordDetector:
         return scores
 
     def _step(self, chunk):
+        silent = {word: 0.0 for word in self.wakewords}
         self.raw = np.concatenate((self.raw, chunk))[-(CHUNK_SAMPLES + MEL_CONTEXT_SAMPLES):]
         if self.raw.size < CHUNK_SAMPLES + MEL_CONTEXT_SAMPLES:
-            return 0.0
+            return silent
         mel = self.melspec.run(None, {self.melspec_input: self.raw[None, :]})[0]
         mel = np.squeeze(mel).reshape(-1, 32) / 10.0 + 2.0
         self.mel = np.vstack((self.mel, mel.astype(np.float32)))[-(MEL_WINDOW + MEL_STEP * 10):]
@@ -173,17 +199,21 @@ class WakeWordDetector:
         embedding = self.embedding.run(None, {self.embedding_input: window})[0]
         self.features = np.vstack((self.features, embedding.reshape(1, 96)))[-(FEATURE_WINDOW * 4):]
         if self.features.shape[0] < FEATURE_WINDOW:
-            return 0.0
-        score = float(np.ravel(self.wakeword.run(
-            None,
-            {self.wakeword_input: self.features[-FEATURE_WINDOW:][None, :, :]},
-        )[0])[0])
+            return silent
+        window = self.features[-FEATURE_WINDOW:][None, :, :]
+        scores = {
+            word: float(np.ravel(session.run(None, {self.wakeword_inputs[word]: window})[0])[0])
+            for word, session in self.wakewords.items()
+        }
         self.predictions += 1
-        return score if self.predictions > WARMUP_PREDICTIONS else 0.0
+        return scores if self.predictions > WARMUP_PREDICTIONS else silent
 
 
 class WakeWordEngine:
-    """Background worker: resamples microphone blocks and reports detections."""
+    """Background worker: resamples microphone blocks and reports detections.
+
+    on_detect receives the detected word and its score.
+    """
 
     def __init__(self, detector, threshold, on_detect, resampler_factory=None):
         self.detector = detector
@@ -230,10 +260,14 @@ class WakeWordEngine:
                 scores = self.detector.process(np.clip(audio, -1.0, 1.0) * 32767.0)
             except Exception:
                 continue
-            if scores and max(scores) >= self.threshold:
+            best = max(
+                ((score, word) for step in scores for word, score in step.items()),
+                default=None,
+            )
+            if best is not None and best[0] >= self.threshold:
                 self.detector.reset()
                 resampler, rate = None, None
-                self.on_detect(max(scores))
+                self.on_detect(best[1], best[0])
 
 
 def _soxr_stream(input_rate):
