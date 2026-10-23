@@ -1,6 +1,6 @@
 comtypes==1.4.16
 customtkinter==6.0.0
-cryptography==50.0.1
+cryptography==50.0.2
 ctranslate2==4.4.0
 faster-whisper==1.2.1
 httpx==0.28.1
