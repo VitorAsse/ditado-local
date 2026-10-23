@@ -5,6 +5,7 @@ ctranslate2==4.4.0
 faster-whisper==1.2.1
 httpx==0.28.1
 numpy==2.4.6
+onnxruntime==1.28.0
 Pillow==12.3.0
 pypdfium2==5.13.0
 pycaw==20251023

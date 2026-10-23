@@ -125,6 +125,12 @@ class AppConfig:
         "user_identity": {"display_name": "", "aliases": []},
         "agent_chat_hotkey": "Ctrl + Windows",
         "quick_correction_gesture": "Ctrl + clique direito",
+        # Device-local: an always-open microphone is a per-computer decision.
+        # Not synced, so the 16 cloud preferences stay unchanged.
+        "wake_word_enabled": False,
+        "wake_word": "hey_jarvis",
+        "wake_word_sensitivity": "medium",
+        "wake_word_action": "dictation",
     }
 
     SYNCED_PREFERENCE_KEYS = {
@@ -144,7 +150,9 @@ class AppConfig:
         "microphone_name", "startup_enabled", "transcription_profile",
         "transcription_compute_type", "transcription_vocabulary", "agent_model", "agent_keep_alive",
     }
-    DEVICE_LOCAL_PREFERENCE_KEYS = set()
+    DEVICE_LOCAL_PREFERENCE_KEYS = {
+        "wake_word_enabled", "wake_word", "wake_word_sensitivity", "wake_word_action",
+    }
 
     def __init__(self, path=None):
         self.lock = threading.RLock()

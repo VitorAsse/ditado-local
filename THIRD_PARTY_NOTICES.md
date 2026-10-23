@@ -16,6 +16,8 @@ instalação ou primeira execução.
 | [OpenAI Whisper](https://github.com/openai/whisper) | Arquitetura e pesos originais | MIT |
 | [dropbox-dash/faster-whisper-large-v3-turbo](https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo) | Modelo convertido usado no perfil equilibrado | MIT |
 | [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-9B) | Agente local pelo Ollama | Apache-2.0 |
+| [dscripka/openWakeWord](https://github.com/dscripka/openWakeWord) | Pipeline de ativação por voz reimplementado em `ditado_wakeword.py` | Apache-2.0 |
+| Modelos pré-treinados openWakeWord v0.5.1 | Palavras de ativação, baixadas só ao ligar o recurso | CC BY-NC-SA 4.0 (uso não comercial) |
 
 A opção `-EnableGpu` baixa wheels oficiais `nvidia-cublas-cu12` 12.4.5.8 e
 `nvidia-cudnn-cu12` 8.9.7.29, sujeitos às licenças proprietárias NVIDIA incluídas
@@ -31,6 +33,7 @@ nos próprios wheels. O instalador preserva esses textos junto às DLLs em `gpu-
 | faster-whisper | 1.2.1 | MIT |
 | httpx | 0.28.1 | BSD-3-Clause |
 | numpy | 2.4.6 | BSD-3-Clause e componentes compatíveis |
+| onnxruntime | 1.28.0 | MIT |
 | Pillow | 12.3.0 | MIT-CMU |
 | pypdfium2 | 5.13.0 | BSD-3-Clause, Apache-2.0 e licenças das dependências PDFium incluídas no wheel |
 | pycaw | 20251023 | MIT |

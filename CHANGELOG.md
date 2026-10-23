@@ -2,6 +2,16 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.13 - 2026-10-23
+
+- Ativação por voz opcional na aba Ditado: `Hey Jarvis` ou `Alexa` iniciam o
+  ditado ou uma pergunta ao agente, com fim automático após uma pausa, `Esc` ou
+  `Cancelar` para descartar e descarte quando nada é dito. Começa desligada.
+- Detecção local com modelos openWakeWord em onnxruntime, baixados na primeira
+  ativação e verificados por SHA-256. A escuta pausa durante gravações,
+  processamento e com a tela bloqueada, e reabre o microfone com espera crescente
+  após falhas. Preferências ficam no dispositivo, sem mudar as 16 sincronizadas.
+
 ## 0.4.12 - 2026-09-27
 
 - Revisões preservam o idioma português ou inglês do rascunho independentemente

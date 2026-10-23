@@ -105,6 +105,32 @@ notificação aparece no canto inferior direito: o resultado está na área de
 transferência e pode ser colado com `Ctrl + V`. O aviso não tira o foco, desaparece
 após oito segundos e também funciona para resultados do agente.
 
+### Ativação por voz
+
+Na aba **Ditado > Ativação por voz**, ligue o recurso para começar a gravar sem
+teclado: diga a palavra de ativação (`Hey Jarvis` ou `Alexa`), espere o aviso
+`Ouvindo...` e faça o pedido. A gravação termina sozinha depois de uma pausa de
+cerca de 1,2 segundo; `Esc` ou o botão `Cancelar` descartam o áudio. Se nada for
+dito em seis segundos, a gravação é descartada.
+
+- **Depois de ouvir:** `Ditar no aplicativo em foco` funciona como `Ctrl + Espaço`;
+  `Perguntar ao agente` abre uma conversa nova e envia a pergunta falada.
+- **Sensibilidade:** `Alta` aceita pronúncias menos claras e dispara por engano com
+  mais facilidade; `Baixa` exige uma pronúncia mais clara.
+- O menu da bandeja tem `Ativação por voz` para ligar ou desligar rapidamente.
+
+Com o recurso ligado, o microfone fixo fica aberto enquanto o app está ocioso e o
+Windows mostra o indicador de microfone em uso. O áudio é analisado em memória, só
+neste PC, e nada é gravado até a palavra ser reconhecida. A escuta pausa durante
+gravações, processamento e com a tela bloqueada. O detector usa cerca de 2% de um
+núcleo do processador. Evite fones Bluetooth como microfone fixo: manter o
+microfone aberto força o modo de chamada e piora o áudio do fone.
+
+Na primeira ativação, os modelos openWakeWord (cerca de 3 MB) são baixados do
+GitHub oficial do projeto e conferidos por SHA-256 em
+`%LOCALAPPDATA%\faster-whisper\models\wakeword`. As preferências desta seção
+ficam somente neste computador e não são sincronizadas.
+
 ### Agente local
 
 **Para abrir o chat:** pressione `Ctrl + Windows`. Se houver texto selecionado,
@@ -280,6 +306,8 @@ idioma por configuração manual.
 - A captura de textos copiados por outros aplicativos começa desativada.
 - Não existe telemetria no aplicativo.
 - PyPI e Hugging Face são acessados para baixar dependências e modelos.
+- A ativação por voz começa desligada; ligada, analisa o microfone localmente sem
+  gravar nem enviar áudio. Seus modelos vêm do GitHub do openWakeWord.
 - O Supabase é acessado somente depois que uma conexão é configurada na aba `Nuvem`.
 
 Se `DITADO_OLLAMA_URL` apontar para outra máquina ou serviço, o texto será enviado para

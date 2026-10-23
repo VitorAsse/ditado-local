@@ -17,5 +17,9 @@
   "startup_enabled": true,
   "user_identity": {"display_name": "", "aliases": []},
   "agent_chat_hotkey": "Ctrl + Windows",
-  "quick_correction_gesture": "Ctrl + clique direito"
+  "quick_correction_gesture": "Ctrl + clique direito",
+  "wake_word_enabled": false,
+  "wake_word": "hey_jarvis",
+  "wake_word_sensitivity": "medium",
+  "wake_word_action": "dictation"
 }

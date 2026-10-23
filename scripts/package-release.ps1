@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.4.12"
+    [string]$Version = "0.4.13"
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,6 +64,7 @@ $packageFiles = @(
     "ditado_ollama.py",
     "ditado_storage.py",
     "ditado_skill_catalog.py",
+    "ditado_wakeword.py",
     "builtin_skills.json",
     "ditado_theme.py",
     "install.ps1",

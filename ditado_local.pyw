@@ -23,6 +23,7 @@ from pynput import keyboard as pynput_keyboard
 
 APP_ROOT = Path(os.environ["LOCALAPPDATA"]) / "faster-whisper"
 GPU_LIBS = APP_ROOT / "gpu-libs"
+WAKE_MODEL_DIR = APP_ROOT / "models" / "wakeword"
 ASSETS_ROOT = Path(__file__).resolve().parent / "assets"
 APP_ICON_PNG = ASSETS_ROOT / "ditado-local-icon.png"
 APP_ICON_ICO = ASSETS_ROOT / "ditado-local.ico"
@@ -90,6 +91,20 @@ from ditado_cloud import (
     RecoveryKeyRequired,
 )
 from ditado_storage import AppConfig, HistoryStore, atomic_write_text
+from ditado_wakeword import (
+    WAKE_ACTIONS,
+    WAKE_SENSITIVITIES,
+    WAKE_WORDS,
+    RetryClock,
+    SpeechEndpoint,
+    WakeWordDetector,
+    WakeWordEngine,
+    ensure_models,
+    is_session_locked,
+    resolve_wake_action,
+    resolve_wake_sensitivity,
+    resolve_wake_word,
+)
 from ditado_harness import normalize_identity, normalize_prose_punctuation
 from ditado_theme import (
     APP_COLORS,
@@ -559,6 +574,28 @@ class DitadoLocalApp:
         self.ollama_setup_action = None
         self.ollama_setup_message = ""
         self.ollama_setup_in_progress = False
+        self.wake_enabled = tk.BooleanVar(value=bool(self.config.get("wake_word_enabled", False)))
+        self.wake_word = tk.StringVar(
+            value=WAKE_WORDS[resolve_wake_word(self.config.get("wake_word"))]["display_name"]
+        )
+        self.wake_sensitivity = tk.StringVar(
+            value=WAKE_SENSITIVITIES[
+                resolve_wake_sensitivity(self.config.get("wake_word_sensitivity"))
+            ]["display_name"]
+        )
+        self.wake_action = tk.StringVar(
+            value=WAKE_ACTIONS[resolve_wake_action(self.config.get("wake_word_action"))]
+        )
+        self.wake_status_text = tk.StringVar(value="Desligada. O microfone só abre enquanto você grava.")
+        self.wake_engine = None
+        self.wake_engine_word = None
+        self.wake_loading = False
+        self.wake_stream = None
+        self.wake_stream_rate = SAMPLE_RATE
+        self.wake_retry = RetryClock()
+        self.wake_endpoint = None
+        self.wake_locked = False
+        self.wake_lock_checked_at = 0.0
 
         self.input_devices = self._get_input_devices()
         self._build_interface()
@@ -595,6 +632,8 @@ class DitadoLocalApp:
         self.root.after(250, self._start_ollama_probe)
         self.root.after(300, self._start_model_preload)
         self.root.after(1200, self._cloud_auto_sync)
+        if self.wake_enabled.get():
+            self.root.after(1500, self._load_wake_engine)
 
     def _set_window_icon(self):
         try:
@@ -1122,6 +1161,86 @@ class DitadoLocalApp:
             text_color="#B8B8C3",
             font=app_font(size=11),
         ).pack(anchor="w", padx=16, pady=(7, 13))
+
+        self._build_wake_word_controls(tab)
+
+    def _build_wake_word_controls(self, tab):
+        card = ctk.CTkFrame(tab, fg_color="#121217", corner_radius=15)
+        card.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkLabel(
+            card,
+            text="ATIVAÇÃO POR VOZ",
+            text_color="#9B87F5",
+            font=app_font(size=10, weight="bold"),
+        ).pack(anchor="w", padx=16, pady=(13, 7))
+        self._build_switch_row(
+            card,
+            "Começar a gravar quando eu disser a palavra de ativação",
+            self.wake_enabled,
+            self._wake_enabled_changed,
+        ).pack(fill="x", padx=16, pady=(0, 10))
+
+        options = ctk.CTkFrame(card, fg_color="transparent")
+        options.pack(fill="x", padx=16)
+        options.grid_columnconfigure((0, 1), weight=1)
+        segmented = dict(
+            height=30,
+            corner_radius=10,
+            fg_color="#202027",
+            selected_color="#6F52E5",
+            selected_hover_color="#7C5CFC",
+            unselected_color="#202027",
+            unselected_hover_color="#2B2B35",
+            text_color="#EFEFF4",
+        )
+        for column, (title, values, variable, command) in enumerate((
+            ("Palavra", [item["display_name"] for item in WAKE_WORDS.values()],
+             self.wake_word, self._wake_word_changed),
+            ("Sensibilidade", [item["display_name"] for item in WAKE_SENSITIVITIES.values()],
+             self.wake_sensitivity, self._wake_settings_changed),
+        )):
+            ctk.CTkLabel(
+                options,
+                text=title,
+                text_color="#DADAE2",
+                font=app_font(size=11, weight="bold"),
+            ).grid(row=0, column=column, sticky="w", padx=(0 if column == 0 else 6, 0))
+            ctk.CTkSegmentedButton(
+                options, values=values, variable=variable, command=command, **segmented,
+            ).grid(row=1, column=column, sticky="ew", padx=(0, 6) if column == 0 else (6, 0), pady=(5, 10))
+        ctk.CTkLabel(
+            card,
+            text="Depois de ouvir",
+            text_color="#DADAE2",
+            font=app_font(size=11, weight="bold"),
+        ).pack(anchor="w", padx=16)
+        ctk.CTkSegmentedButton(
+            card,
+            values=list(WAKE_ACTIONS.values()),
+            variable=self.wake_action,
+            command=self._wake_settings_changed,
+            **segmented,
+        ).pack(fill="x", padx=16, pady=(5, 8))
+        ctk.CTkLabel(
+            card,
+            textvariable=self.wake_status_text,
+            text_color="#B8B8C3",
+            font=app_font(size=11),
+            justify="left",
+            wraplength=640,
+        ).pack(anchor="w", padx=16)
+        ctk.CTkLabel(
+            card,
+            text=(
+                "Com a ativação ligada, o microfone fica aberto e é analisado só neste PC; "
+                "nada é gravado até ouvir a palavra. A gravação termina numa pausa da fala "
+                "ou com Esc para cancelar. Fica pausada com a tela bloqueada."
+            ),
+            text_color="#72727F",
+            font=app_font(size=10),
+            justify="left",
+            wraplength=640,
+        ).pack(anchor="w", padx=16, pady=(4, 13))
 
     def _build_switch_row(self, parent, label, variable, command):
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -2026,13 +2145,13 @@ class DitadoLocalApp:
         )
         self._select_saved_microphone()
 
-    def _start_input_stream(self, device):
+    def _start_input_stream(self, device, callback=None):
         stream = sd.InputStream(
             samplerate=device["sample_rate"],
             device=device["index"],
             channels=1,
             dtype="float32",
-            callback=self._capture_audio,
+            callback=callback or self._capture_audio,
         )
         try:
             stream.start()
@@ -2063,8 +2182,214 @@ class DitadoLocalApp:
             device = next(item for item in self.input_devices if item["index"] == device_index)
             self.config.set("microphone_name", device["name"])
             self.status.set(f"Microfone fixado: {device['name']}")
+            # The wake listener reopens on the newly fixed microphone.
+            self._stop_wake_listener()
+            self.wake_retry.succeeded()
         except (ValueError, StopIteration):
             self.status.set("Não foi possível salvar o microfone selecionado.")
+
+    def _wake_enabled_changed(self):
+        enabled = bool(self.wake_enabled.get())
+        self.config.set("wake_word_enabled", enabled)
+        self.wake_retry.succeeded()
+        if enabled:
+            self._load_wake_engine()
+        else:
+            self._stop_wake_listener()
+        self._update_wake_status()
+        self._refresh_tray_menu()
+
+    def _toggle_wake_from_tray(self):
+        self.wake_enabled.set(not self.wake_enabled.get())
+        self._wake_enabled_changed()
+
+    def _wake_word_changed(self, _value=None):
+        self._wake_settings_changed()
+        if self.wake_enabled.get():
+            self._stop_wake_listener()
+            self._load_wake_engine()
+
+    def _wake_settings_changed(self, _value=None):
+        word = next((key for key, item in WAKE_WORDS.items()
+                     if item["display_name"] == self.wake_word.get()), resolve_wake_word(None))
+        sensitivity = next((key for key, item in WAKE_SENSITIVITIES.items()
+                            if item["display_name"] == self.wake_sensitivity.get()),
+                           resolve_wake_sensitivity(None))
+        action = next((key for key, label in WAKE_ACTIONS.items()
+                       if label == self.wake_action.get()), resolve_wake_action(None))
+        self.config.set("wake_word", word)
+        self.config.set("wake_word_sensitivity", sensitivity)
+        self.config.set("wake_word_action", action)
+        if self.wake_engine is not None:
+            self.wake_engine.threshold = WAKE_SENSITIVITIES[sensitivity]["threshold"]
+        self._update_wake_status()
+
+    def _load_wake_engine(self):
+        if self.wake_loading or self.closing or not self.wake_enabled.get():
+            return
+        word = resolve_wake_word(self.config.get("wake_word"))
+        if self.wake_engine is not None and self.wake_engine_word == word:
+            return
+        self.wake_loading = True
+        self._update_wake_status()
+        threading.Thread(target=self._prepare_wake_engine, args=(word,), daemon=True).start()
+
+    def _prepare_wake_engine(self, word):
+        try:
+            paths = ensure_models(WAKE_MODEL_DIR, word)
+            detector = WakeWordDetector.from_files(paths, word)
+        except Exception as error:
+            self.events.put(("wake_engine_failed", f"Não foi possível preparar a ativação por voz: {error}"))
+            return
+        self.events.put(("wake_engine_ready", (word, detector)))
+
+    def _finish_wake_engine(self, payload):
+        word, detector = payload
+        self.wake_loading = False
+        self._stop_wake_listener()
+        if self.wake_engine is not None:
+            self.wake_engine.close()
+        sensitivity = resolve_wake_sensitivity(self.config.get("wake_word_sensitivity"))
+        self.wake_engine = WakeWordEngine(
+            detector,
+            WAKE_SENSITIVITIES[sensitivity]["threshold"],
+            lambda score: self.events.put(("wake_word", score)),
+        )
+        self.wake_engine_word = word
+        if word != resolve_wake_word(self.config.get("wake_word")):
+            self._load_wake_engine()
+        self._update_wake_status()
+
+    def _fail_wake_engine(self, message):
+        self.wake_loading = False
+        self.wake_status_text.set(message + " Desligue e ligue a ativação para tentar de novo.")
+
+    def _wake_audio(self, indata, _frames, _time_info, _status):
+        engine = self.wake_engine
+        if engine is not None:
+            engine.feed(indata[:, 0], self.wake_stream_rate)
+
+    def _start_wake_listener(self):
+        try:
+            # Recording re-enumerates PortAudio, so the listener only runs while idle.
+            self._refresh_audio_devices()
+            device = self._selected_device()
+            self.wake_engine.reset()
+            stream = self._start_input_stream(device, callback=self._wake_audio)
+        except Exception as error:
+            self.wake_retry.failed()
+            self.wake_status_text.set(
+                f"Microfone indisponível para a ativação por voz ({error}). Tentando de novo em instantes."
+            )
+            return
+        self.wake_stream_rate = device["sample_rate"]
+        self.wake_stream = stream
+        self.wake_retry.succeeded()
+        self._update_wake_status()
+
+    def _stop_wake_listener(self):
+        stream = getattr(self, "wake_stream", None)
+        self.wake_stream = None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+        engine = getattr(self, "wake_engine", None)
+        if engine is not None:
+            engine.reset()
+
+    def _wake_listener_wanted(self):
+        if not self.wake_enabled.get() or self.wake_engine is None or self.closing:
+            return False
+        if self.recording or self.processing:
+            return False
+        now = time.monotonic()
+        if now - self.wake_lock_checked_at >= 1.0:
+            self.wake_lock_checked_at = now
+            locked = is_session_locked()
+            if locked != self.wake_locked:
+                self.wake_locked = locked
+                self._update_wake_status()
+        return not self.wake_locked
+
+    def _update_wake_listener(self):
+        if getattr(self, "wake_enabled", None) is None:
+            return
+        wanted = self._wake_listener_wanted()
+        if wanted and self.wake_stream is None and self.wake_retry.ready():
+            self._start_wake_listener()
+        elif not wanted and self.wake_stream is not None:
+            self._stop_wake_listener()
+            self._update_wake_status()
+
+    def _update_wake_status(self):
+        word = WAKE_WORDS[resolve_wake_word(self.config.get("wake_word"))]["display_name"]
+        if not self.wake_enabled.get():
+            message = "Desligada. O microfone só abre enquanto você grava."
+        elif self.wake_loading:
+            message = "Preparando a palavra de ativação (download único de cerca de 3 MB na primeira vez)..."
+        elif self.wake_engine is None:
+            return
+        elif self.wake_locked:
+            message = "Pausada enquanto a tela está bloqueada."
+        elif self.wake_stream is not None:
+            message = f"Escutando “{word}”. Diga a palavra, espere o aviso e faça o pedido."
+        elif self.recording or self.processing:
+            message = "Pausada durante a gravação e o processamento."
+        else:
+            message = "Abrindo o microfone..."
+        self.wake_status_text.set(message)
+
+    def _start_wake_recording(self):
+        if self.wake_stream is None or self.recording or self.processing:
+            return
+        self._stop_wake_listener()
+        action = resolve_wake_action(self.config.get("wake_word_action"))
+        session_id = self._next_hotkey_session()
+        if action == "agent":
+            self._open_new_agent_chat()
+            chat = self.agent_chat_window
+            if chat and chat.is_open():
+                self._toggle_chat_recording(chat)
+            mode, title = "agent_chat", "Agente ouvindo..."
+            color, state = "#E879F9", "agent_recording"
+        else:
+            self.start_recording("dictation")
+            mode, title = "dictation", "Ouvindo..."
+            color, state = "#A78BFA", "recording"
+        if not (self.recording and self.recording_mode == mode):
+            self._update_wake_status()
+            return
+        payload = ("wake", session_id)
+        self.active_hotkey_session = payload
+        self.wake_endpoint = (session_id, SpeechEndpoint(self.input_sample_rate))
+        self.overlay.show(
+            state,
+            title,
+            "Fale; eu paro quando você fizer uma pausa",
+            color,
+            action_label="Cancelar",
+            on_action=lambda: self.events.put(("cancel", payload)),
+        )
+        self._update_wake_status()
+
+    def _finish_wake_recording(self, payload):
+        session_id, result = payload
+        if self.active_hotkey_session != ("wake", session_id) or not self.recording:
+            return
+        self.wake_endpoint = None
+        chat = self.agent_chat_window if self.recording_mode == "agent_chat" else None
+        if result == "no_speech":
+            if chat:
+                chat.set_recording(False)
+            self._cancel_recording()
+            self.status.set("Não ouvi nenhum pedido depois da palavra de ativação.")
+        elif chat and chat.is_open():
+            self._toggle_chat_recording(chat)
+        else:
+            self.stop_recording()
 
     def _settings_changed(self):
         self.config.set("auto_paste", bool(self.auto_paste.get()))
@@ -3113,6 +3438,11 @@ class DitadoLocalApp:
             self._cancel_agent_hotkey_for_secure_attention()
             return
 
+        active_session = getattr(self, "active_hotkey_session", None)
+        if key == pynput_keyboard.Key.esc and active_session and active_session[0] == "wake":
+            self.events.put(("cancel", active_session))
+            return
+
         shift_down = bool(self.keys_down & {pynput_keyboard.Key.shift, pynput_keyboard.Key.shift_l, pynput_keyboard.Key.shift_r})
         if key == pynput_keyboard.Key.space and ctrl_down and not shift_down:
             if not self.dictation_chord_active:
@@ -3172,6 +3502,8 @@ class DitadoLocalApp:
             return
         try:
             self.target_window = ctypes.windll.user32.GetForegroundWindow()
+            self.wake_endpoint = None
+            self._stop_wake_listener()
             self.recording_mode = mode
             self.audio_chunks = []
             self.audio_capture_errors = 0
@@ -3245,6 +3577,12 @@ class DitadoLocalApp:
         self.audio_chunks.append(channel)
         rms = float(np.sqrt(np.mean(np.square(channel)))) if channel.size else 0.0
         self.current_level = min(1.0, rms * 12.0)
+        wake = getattr(self, "wake_endpoint", None)
+        if wake is not None:
+            session_id, endpoint = wake
+            result = endpoint.feed(channel)
+            if result:
+                self.events.put(("wake_stop", (session_id, result)))
 
     def _begin_text_capture(self, mode):
         self.agent_selection_cancelled.set()
@@ -3300,6 +3638,7 @@ class DitadoLocalApp:
         if not self.recording:
             return
         self.active_hotkey_session = None
+        self.wake_endpoint = None
         self.recording = False
         self.processing = True
         stream = self.stream
@@ -3355,8 +3694,12 @@ class DitadoLocalApp:
 
     def _cancel_recording(self):
         self.active_hotkey_session = None
+        self.wake_endpoint = None
         if not self.recording:
             return
+        chat = getattr(self, "agent_chat_window", None)
+        if getattr(self, "recording_mode", None) == "agent_chat" and chat and chat.is_open():
+            chat.set_recording(False)
         self.recording = False
         self.processing = False
         self.agent_selection_cancelled.set()
@@ -4260,6 +4603,16 @@ class DitadoLocalApp:
                 if getattr(self, "active_hotkey_session", None) == payload:
                     self._cancel_recording()
                 cancelled_sessions.discard(session_id)
+            elif event == "wake_word":
+                self._start_wake_recording()
+            elif event == "wake_stop":
+                self._finish_wake_recording(payload)
+            elif event == "wake_engine_ready":
+                self._finish_wake_engine(payload)
+            elif event == "wake_engine_failed":
+                self._fail_wake_engine(payload)
+            elif event == "toggle_wake":
+                self._toggle_wake_from_tray()
             elif event == "status":
                 self.status.set(payload)
             elif event == "pipeline_status":
@@ -4342,6 +4695,7 @@ class DitadoLocalApp:
                 self._exit_app()
         if self.recording:
             self.overlay.set_level(self.current_level)
+        self._update_wake_listener()
         if not self.closing:
             self.root.after(50, self._process_events)
 
@@ -4367,6 +4721,11 @@ class DitadoLocalApp:
                 lambda _icon, _item: self.events.put(("copy_latest", None)),
             ),
             pystray.MenuItem(
+                "Ativação por voz",
+                lambda _icon, _item: self.events.put(("toggle_wake", None)),
+                checked=lambda _item: bool(self.config.get("wake_word_enabled", False)),
+            ),
+            pystray.MenuItem(
                 "Encerrar",
                 lambda _icon, _item: self.events.put(("exit", None)),
             ),
@@ -4377,6 +4736,14 @@ class DitadoLocalApp:
             "Ditado local: ditado e agente por voz",
             menu,
         )
+
+    def _refresh_tray_menu(self):
+        tray_icon = getattr(self, "tray_icon", None)
+        if tray_icon is not None:
+            try:
+                tray_icon.update_menu()
+            except Exception:
+                pass
 
     def _hide_main_window(self):
         self.root.withdraw()
@@ -4399,6 +4766,9 @@ class DitadoLocalApp:
         if self.chat_hotkey:
             self.chat_hotkey.stop()
         self.agent_selection_cancelled.set()
+        self._stop_wake_listener()
+        if getattr(self, "wake_engine", None) is not None:
+            self.wake_engine.close()
         if self.stream is not None:
             try:
                 self.stream.stop()
