@@ -3751,6 +3751,12 @@ class DitadoLocalApp:
             for virtual_key in self.LEFT_AGENT_VIRTUAL_KEYS
         )
 
+    def _is_ctrl_physically_down(self):
+        try:
+            return bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)
+        except Exception:
+            return True
+
     def _get_hotkey_lock(self):
         hotkey_lock = getattr(self, "hotkey_lock", None)
         if hotkey_lock is None:
@@ -3799,6 +3805,11 @@ class DitadoLocalApp:
             return
 
         shift_down = bool(self.keys_down & {pynput_keyboard.Key.shift, pynput_keyboard.Key.shift_l, pynput_keyboard.Key.shift_r})
+        if key == pynput_keyboard.Key.space and ctrl_down and not self._is_ctrl_physically_down():
+            # Games and fullscreen apps can swallow the Ctrl release; drop the stale state
+            # so a plain Space never opens the microphone.
+            self.keys_down -= self.CTRL_KEYS
+            ctrl_down = False
         if key == pynput_keyboard.Key.space and ctrl_down and not shift_down:
             if not self.dictation_chord_active:
                 session_id = self._next_hotkey_session()

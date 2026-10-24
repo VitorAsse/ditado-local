@@ -17,6 +17,8 @@ LOADER = importlib.machinery.SourceFileLoader("ditado_local", str(APP_PATH))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 DITADO_LOCAL = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(DITADO_LOCAL)
+# Hotkey tests simulate key events; treat Ctrl as physically held unless a test says otherwise.
+DITADO_LOCAL.DitadoLocalApp._is_ctrl_physically_down = lambda self: True
 
 import ditado_wakeword
 from ditado_storage import AppConfig

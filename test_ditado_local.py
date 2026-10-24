@@ -16,6 +16,8 @@ LOADER = importlib.machinery.SourceFileLoader("ditado_local", str(APP_PATH))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 DITADO_LOCAL = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(DITADO_LOCAL)
+# Hotkey tests simulate key events; treat Ctrl as physically held unless a test says otherwise.
+DITADO_LOCAL.DitadoLocalApp._is_ctrl_physically_down = lambda self: True
 from ditado_ai import (
     OllamaClient,
     OllamaModelMissingError,
@@ -981,6 +983,20 @@ class AgentConversationTests(unittest.TestCase):
             [("start", ("dictation", 1))],
             emitted_events,
         )
+
+    def test_plain_space_with_stale_ctrl_state_does_not_start_dictation(self):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.keys_down = {DITADO_LOCAL.pynput_keyboard.Key.ctrl_l}
+        app.dictation_chord_active = False
+        app.agent_chord_active = False
+        app.events = DITADO_LOCAL.queue.SimpleQueue()
+        app._is_ctrl_physically_down = Mock(return_value=False)
+
+        app._on_key_press(DITADO_LOCAL.pynput_keyboard.Key.space)
+
+        self.assertTrue(app.events.empty())
+        self.assertFalse(app.dictation_chord_active)
+        self.assertNotIn(DITADO_LOCAL.pynput_keyboard.Key.ctrl_l, app.keys_down)
 
     def test_physical_hotkeys_are_processed_while_injected_keys_are_ignored(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
