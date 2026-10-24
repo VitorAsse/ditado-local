@@ -2,6 +2,12 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.16 - 2026-10-24
+
+- Ctrl+Espaço confere se o Ctrl está realmente pressionado antes de ditar. Jogos
+  e apps em tela cheia que engolem a soltura do Ctrl não fazem mais o Espaço
+  sozinho abrir o microfone e silenciar o som.
+
 ## 0.4.15 - 2026-10-23
 
 - Frase de ativação personalizada para ditar e para o agente: falas curtas
