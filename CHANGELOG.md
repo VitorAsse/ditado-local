@@ -2,6 +2,12 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.17 - 2026-11-08
+
+- A colagem automática espera até 1,5 s o Ctrl (e demais modificadores) ser
+  solto antes de enviar Ctrl+V. Antes, se o Ctrl do atalho ainda estivesse
+  pressionado quando a transcrição terminava, o texto ficava só copiado.
+
 ## 0.4.16 - 2026-10-24
 
 - Ctrl+Espaço confere se o Ctrl está realmente pressionado antes de ditar. Jogos
