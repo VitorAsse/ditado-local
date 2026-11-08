@@ -104,7 +104,7 @@ class DeliveryTests(unittest.TestCase):
         self.app.desktop.modifiers_down.return_value = False
         self.app.desktop.can_paste.return_value = True
         self.app.desktop.same_window.return_value = True
-        self.deliver = method('_deliver_result')
+        self.deliver = method('_deliver_result', time=time)
 
     def test_pastes_in_unchanged_writable_field_without_refocusing(self):
         self.deliver(self.app, 'result', 'dictation', object())
@@ -130,7 +130,14 @@ class DeliveryTests(unittest.TestCase):
         self.deliver(self.app, 'result', 'dictation', object())
         self.app._paste_into_active_app.assert_not_called()
 
+    def test_waits_for_hotkey_modifiers_to_be_released_before_pasting(self):
+        self.app.desktop.modifiers_down.side_effect = [True, True, False, False]
+        self.deliver(self.app, 'result', 'dictation', object())
+        self.app._paste_into_active_app.assert_called_once_with()
+        self.assertTrue(self.app.events.empty())
+
     def test_held_modifiers_do_not_inject_a_shortcut(self):
+        self.app.paste_modifier_wait_seconds = 0.05
         self.app.desktop.modifiers_down.return_value = True
         self.deliver(self.app, 'result', 'agent', object())
         self.app._paste_into_active_app.assert_not_called()

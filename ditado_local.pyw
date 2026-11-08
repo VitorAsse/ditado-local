@@ -4880,6 +4880,11 @@ class DitadoLocalApp:
     def _deliver_result(self, text, mode, target):
         pasted = False
         try:
+            # The hotkey is released key by key; Ctrl often stays down a moment after
+            # Space. Wait briefly for a clean keyboard instead of silently skipping.
+            deadline = time.monotonic() + getattr(self, "paste_modifier_wait_seconds", 1.5)
+            while self.desktop.modifiers_down() and time.monotonic() < deadline:
+                time.sleep(0.02)
             if (self._read_clipboard_text() == text and not self.desktop.modifiers_down()
                     and self.desktop.can_paste(target) and self.desktop.same_window(target)
                     and self._read_clipboard_text() == text):
