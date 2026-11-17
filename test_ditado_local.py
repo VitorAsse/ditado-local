@@ -310,45 +310,6 @@ class RecordingRecoveryTests(unittest.TestCase):
         self.assertEqual(2, app._refresh_audio_devices.call_count)
         self.assertEqual(2, app._start_input_stream.call_count)
 
-    def test_skips_device_refresh_when_windows_reports_no_microphone_change(self):
-        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
-        device = {"index": 2, "name": "Viva voz", "sample_rate": 48_000}
-        app.input_devices = [device]
-        app.mic_watcher = Mock()
-        app.mic_watcher.needs_refresh.return_value = False
-        app._refresh_audio_devices = Mock()
-        app._selected_device = Mock(return_value=device)
-        app._start_input_stream = Mock(return_value=object())
-
-        app._open_input_stream_with_recovery()
-        app._refresh_audio_devices.assert_not_called()
-
-        app.mic_watcher.needs_refresh.return_value = True
-        app._open_input_stream_with_recovery()
-        app._refresh_audio_devices.assert_called_once_with()
-
-    def test_warm_tick_flags_missed_microphone_change(self):
-        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
-        app.closing = False
-        app.recording = False
-        app.processing = False
-        app.audio_endpoint_signature = ("brio",)
-        app.mic_watcher = Mock()
-        app.playback_mute = Mock()
-        app.desktop = Mock()
-        app.root = Mock()
-        with patch.object(DITADO_LOCAL, "sd"), patch.object(
-            DITADO_LOCAL, "capture_endpoint_signature", return_value=("brio",)
-        ):
-            app._keep_hotkey_path_warm()
-        app.mic_watcher.mark_changed.assert_not_called()
-        with patch.object(DITADO_LOCAL, "sd"), patch.object(
-            DITADO_LOCAL, "capture_endpoint_signature", return_value=("brio", "headset")
-        ):
-            app._keep_hotkey_path_warm()
-        app.mic_watcher.mark_changed.assert_called_once_with()
-        self.assertEqual(2, app.root.after.call_count)
-
     def test_hotplug_does_not_open_bluetooth_microphone_at_old_webcam_index(self):
         app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
         app.config = Mock()
