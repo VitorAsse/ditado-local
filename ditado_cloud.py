@@ -977,6 +977,8 @@ class CloudSyncManager:
     def sync_once(self, recovery_code=None):
         if not self.sync_lock.acquire(blocking=False):
             raise CloudError("Uma sincronização já está em andamento.")
+        # Lets the UI skip rebuilding views when a failed attempt changed nothing locally.
+        self.last_attempt_changed_local = False
         bucket = None
         session = None
         try:
@@ -998,6 +1000,7 @@ class CloudSyncManager:
                     bucket,
                     prefer_remote=first_sync,
                 )
+                self.last_attempt_changed_local = bool(changed_before)
                 self._observe_local(session["user_id"], bucket)
                 self.state.set_sync_bucket(session["user_id"], bucket)
                 pushed = self._push_outbox(client, session, master_key, bucket)
@@ -1008,6 +1011,7 @@ class CloudSyncManager:
                     remote_after,
                     bucket,
                 )
+                self.last_attempt_changed_local = bool(changed_before or changed_after)
             finally:
                 client.close()
             bucket["last_sync"] = utc_now()

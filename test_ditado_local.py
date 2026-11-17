@@ -1652,5 +1652,67 @@ class InstallerStartupTests(unittest.TestCase):
         self.assertIn("Remove-Item -LiteralPath $startupShortcutPath", installer)
 
 
+class CloudErrorStallTests(unittest.TestCase):
+    def cloud_app(self, visible=False):
+        app = object.__new__(DITADO_LOCAL.DitadoLocalApp)
+        app.cloud_task_in_progress = True
+        app.cloud = Mock()
+        app.root = Mock()
+        app.root.state.return_value = "normal" if visible else "withdrawn"
+        app._refresh_after_cloud_profile_change = Mock()
+        app._refresh_cloud_view = Mock()
+        app.cloud_status_text = Mock()
+        app.status = Mock()
+        return app
+
+    def test_failed_automatic_sync_without_local_change_skips_view_rebuild(self):
+        app = self.cloud_app()
+        app.cloud.last_attempt_changed_local = False
+        app._finish_cloud_error({"message": "offline", "automatic": True})
+        app._refresh_after_cloud_profile_change.assert_not_called()
+        self.assertEqual(1, app.cloud_auto_failures)
+        self.assertFalse(app.cloud_task_in_progress)
+
+    def test_failed_sync_that_merged_remote_data_still_refreshes(self):
+        app = self.cloud_app()
+        app.cloud.last_attempt_changed_local = True
+        app._finish_cloud_error({"message": "offline", "automatic": True})
+        app._refresh_after_cloud_profile_change.assert_called_once_with()
+
+    def test_manual_errors_keep_refreshing(self):
+        app = self.cloud_app()
+        app.cloud.last_attempt_changed_local = False
+        app._finish_cloud_error({"message": "offline", "automatic": False})
+        app._refresh_after_cloud_profile_change.assert_called_once_with()
+
+    def test_auto_sync_backs_off_while_failing(self):
+        app = self.cloud_app()
+        app.closing = False
+        app.cloud.status.return_value = {"configured": False}
+        delays = []
+        app.root.after.side_effect = lambda delay, _callback: delays.append(delay)
+        for failures in (0, 1, 3, 9):
+            app.cloud_auto_failures = failures
+            app._cloud_auto_sync()
+        self.assertEqual([30_000, 60_000, 240_000, 600_000], delays)
+
+    def test_profile_views_rebuild_only_when_window_is_visible(self):
+        app = self.cloud_app(visible=False)
+        app._rebuild_corrections = Mock()
+        app._rebuild_rules = Mock()
+        app._rebuild_skills = Mock()
+        app._rebuild_profile_views_when_visible()
+        app._rebuild_corrections.assert_not_called()
+        self.assertTrue(app.profile_views_dirty)
+        app.root.state.return_value = "normal"
+        app.closing = False
+        app.history_dirty = False
+        app._refresh_lazy_views()
+        app._rebuild_corrections.assert_called_once_with()
+        app._rebuild_rules.assert_called_once_with()
+        app._rebuild_skills.assert_called_once_with()
+        self.assertFalse(app.profile_views_dirty)
+
+
 if __name__ == "__main__":
     unittest.main()

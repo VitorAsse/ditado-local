@@ -130,6 +130,8 @@ from ditado_theme import (
 
 
 SAMPLE_RATE = 16_000
+CLOUD_AUTO_SYNC_MS = 30_000
+CLOUD_AUTO_SYNC_MAX_MS = 600_000
 SKILL_OUTPUT_MODES = {"Automático": "auto", "Mensagem": "chat_message", "Texto": "plain_prose",
                       "Uma linha": "single_line", "Lista": "list", "Código": "code",
                       "JSON": "json", "Preservar estrutura": "preserve_structure"}
@@ -3554,7 +3556,9 @@ class DitadoLocalApp:
                 },
                 automatic=True,
             )
-        self.root.after(30_000, self._cloud_auto_sync)
+        # Back off while the cloud keeps failing (offline, paused project), up to 10 min.
+        failures = min(getattr(self, "cloud_auto_failures", 0), 5)
+        self.root.after(min(CLOUD_AUTO_SYNC_MS * (2 ** failures), CLOUD_AUTO_SYNC_MAX_MS), self._cloud_auto_sync)
 
     def _cloud_load_devices(self):
         self._start_cloud_task(
@@ -3600,15 +3604,15 @@ class DitadoLocalApp:
         self._select_saved_microphone()
         self._refresh_wake_from_config()
         self._apply_windows_audio_defaults()
-        self._rebuild_corrections()
-        self._rebuild_rules()
-        self._rebuild_skills()
+        self._rebuild_profile_views_when_visible()
         self.history_dirty = True
         if self.tabs.get() == "Histórico":
             self._rebuild_history()
 
     def _finish_cloud_result(self, payload):
         self.cloud_task_in_progress = False
+        if payload.get("automatic"):
+            self.cloud_auto_failures = 0
         result = payload.get("result") or {}
         if result.get("profile_changed"):
             self._refresh_after_cloud_profile_change()
@@ -3627,7 +3631,13 @@ class DitadoLocalApp:
 
     def _finish_cloud_error(self, payload, recovery_required=False):
         self.cloud_task_in_progress = False
-        self._refresh_after_cloud_profile_change()
+        automatic = bool(payload.get("automatic"))
+        if automatic:
+            self.cloud_auto_failures = getattr(self, "cloud_auto_failures", 0) + 1
+        # A failed automatic sync usually changed nothing; rebuilding every settings
+        # view here froze the UI for seconds every 30 s while the cloud was offline.
+        if not automatic or getattr(self.cloud, "last_attempt_changed_local", True):
+            self._refresh_after_cloud_profile_change()
         self._refresh_cloud_view()
         message = payload.get("message", "A sincronização não pôde ser concluída.")
         if recovery_required or not payload.get("automatic"):
@@ -4488,9 +4498,27 @@ class DitadoLocalApp:
             self.history_dirty = True
         self.root.after(450, self._poll_clipboard)
 
+    def _main_window_visible(self):
+        try:
+            return self.root.state() in {"normal", "zoomed"}
+        except Exception:
+            return True
+
+    def _rebuild_profile_views_when_visible(self):
+        """Rebuilding these CTk lists takes seconds; do it only when someone can see them."""
+        if self._main_window_visible():
+            self.profile_views_dirty = False
+            self._rebuild_corrections()
+            self._rebuild_rules()
+            self._rebuild_skills()
+        else:
+            self.profile_views_dirty = True
+
     def _refresh_lazy_views(self):
         if self.closing:
             return
+        if getattr(self, "profile_views_dirty", False) and self._main_window_visible():
+            self._rebuild_profile_views_when_visible()
         if self.history_dirty and self.tabs.get() == "Histórico":
             self._rebuild_history()
         self.root.after(700, self._refresh_lazy_views)
@@ -5127,6 +5155,8 @@ class DitadoLocalApp:
 
     def _show_main_window(self):
         self.root.deiconify()
+        if getattr(self, "profile_views_dirty", False):
+            self.root.after(0, self._rebuild_profile_views_when_visible)
         self.root.lift()
         self.root.attributes("-topmost", True)
         self.root.focus_force()

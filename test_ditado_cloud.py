@@ -472,6 +472,7 @@ class CloudSyncTests(unittest.TestCase):
         with patch.object(self.backend, "select", side_effect=CloudError("Offline")):
             with self.assertRaises(CloudError):
                 manager.sync_once()
+        self.assertFalse(manager.last_attempt_changed_local)
         restored_state = CloudStateStore(path=state.path)
         pending = restored_state.sync_bucket("user-a")["outbox"]
         self.assertIsNotNone(pending[f"skill:{skill_id}"]["deleted_at"])
@@ -492,6 +493,7 @@ class CloudSyncTests(unittest.TestCase):
         with patch.object(first, "_remote_items", side_effect=[rows, CloudError("Offline")]):
             with self.assertRaises(CloudError):
                 first.sync_once()
+        self.assertTrue(first.last_attempt_changed_local)
         disk_state = CloudStateStore(path=state.path)
         self.assertIn(f"skill:{skill_id}", disk_state.sync_bucket("user-a")["manifest"])
         self.assertEqual(skill_id, config.get_skills()[0]["id"])
