@@ -2,6 +2,14 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.18 - 2026-11-17
+
+- Ctrl+Espaço começa a ouvir mais rápido, inclusive no primeiro uso e com o PC
+  carregado: prioridade do processo acima do normal, fila de eventos verificada
+  a cada 15 ms e microfones listados só quando o Windows avisa que algo mudou.
+- Enquanto ocioso, o Ditado mantém na memória o caminho do atalho para o Windows
+  não descartá-lo, conferindo também a lista de microfones.
+
 ## 0.4.17 - 2026-11-08
 
 - A colagem automática espera até 1,5 s o Ctrl (e demais modificadores) ser
