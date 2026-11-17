@@ -1,6 +1,6 @@
 import unittest
 
-from ditado_audio import PlaybackMuteController
+from ditado_audio import CaptureEndpointWatcher, PlaybackMuteController
 
 
 class FakeEndpointVolume:
@@ -101,6 +101,38 @@ class PlaybackMuteControllerTests(unittest.TestCase):
 
         self.assertTrue(controller.reassert_defaults())
         self.assertEqual([{"eMultimedia": "device-a"}], restored)
+
+
+class CaptureEndpointWatcherTests(unittest.TestCase):
+    def test_flags_changes_only_after_registration(self):
+        callbacks = []
+        unregistered = []
+
+        def register(on_change):
+            callbacks.append(on_change)
+            return lambda: unregistered.append(True)
+
+        watcher = CaptureEndpointWatcher(register=register)
+        self.assertTrue(watcher.needs_refresh())
+        self.assertTrue(watcher.start())
+        self.assertTrue(watcher.needs_refresh())  # first recording still refreshes
+        watcher.consume()
+        self.assertFalse(watcher.needs_refresh())
+        callbacks[0]()
+        self.assertTrue(watcher.needs_refresh())
+        watcher.stop()
+        watcher._thread.join(2)
+        self.assertEqual([True], unregistered)
+        self.assertTrue(watcher.needs_refresh())
+
+    def test_registration_failure_keeps_always_refreshing(self):
+        def register(_on_change):
+            raise OSError("sem servico de audio")
+
+        watcher = CaptureEndpointWatcher(register=register)
+        self.assertFalse(watcher.start())
+        watcher.consume()
+        self.assertTrue(watcher.needs_refresh())
 
 
 if __name__ == "__main__":

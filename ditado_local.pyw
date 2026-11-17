@@ -1,4 +1,5 @@
 import ctypes
+import ctypes.wintypes
 import gc
 import json
 import math
@@ -69,6 +70,7 @@ from ditado_ai import (
     select_voice_skills,
 )
 from ditado_audio import (
+    CaptureEndpointWatcher,
     PlaybackMuteController,
     audio_endpoint_names,
     capture_endpoint_signature,
@@ -130,6 +132,11 @@ from ditado_theme import (
 
 
 SAMPLE_RATE = 16_000
+# Event queue poll: the hotkey thread only enqueues; this is how fast Tk reacts.
+EVENT_POLL_MS = 15
+# Idle touch of the hotkey path so Windows does not page it out under memory pressure.
+HOTKEY_WARM_INTERVAL_MS = 90_000
+ABOVE_NORMAL_PRIORITY_CLASS = 0x8000
 SKILL_OUTPUT_MODES = {"Automático": "auto", "Mensagem": "chat_message", "Texto": "plain_prose",
                       "Uma linha": "single_line", "Lista": "list", "Código": "code",
                       "JSON": "json", "Preservar estrutura": "preserve_structure"}
@@ -642,12 +649,16 @@ class DitadoLocalApp:
             on_release=self._on_key_release,
         )
         self.listener.start()
+        self._raise_process_priority()
+        self.mic_watcher = CaptureEndpointWatcher()
+        threading.Thread(target=self.mic_watcher.start, daemon=True).start()
         self._refresh_agent_shortcut()
         self.tray_icon = self._create_tray_icon()
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
         self.root.protocol("WM_DELETE_WINDOW", self._hide_main_window)
-        self.root.after(50, self._process_events)
+        self.root.after(EVENT_POLL_MS, self._process_events)
+        self.root.after(HOTKEY_WARM_INTERVAL_MS, self._keep_hotkey_path_warm)
         self.root.after(450, self._poll_clipboard)
         self.root.after(700, self._refresh_lazy_views)
         self.root.after(250, self._start_ollama_probe)
@@ -2211,6 +2222,9 @@ class DitadoLocalApp:
         )
 
     def _refresh_audio_devices(self, force=False):
+        watcher = getattr(self, "mic_watcher", None)
+        if watcher is not None:
+            watcher.consume()
         sd.stop()
         # Restarting PortAudio re-probes every audio driver, including Bluetooth
         # hands-free ones, which can switch a Bluetooth speaker to call mode. Only
@@ -2256,8 +2270,11 @@ class DitadoLocalApp:
     def _open_input_stream_with_recovery(self):
         # PortAudio caches indices: after hotplug an old index can successfully
         # open a different microphone (including a Bluetooth hands-free input).
-        # Re-enumerate and resolve the saved name before opening any stream.
-        self._refresh_audio_devices()
+        # Re-enumerate and resolve the saved name before opening any stream, unless
+        # Windows notifications confirm no microphone changed since the last refresh.
+        watcher = getattr(self, "mic_watcher", None)
+        if watcher is None or watcher.needs_refresh() or not getattr(self, "input_devices", None):
+            self._refresh_audio_devices()
         device = self._selected_device()
         try:
             return device, self._start_input_stream(device)
@@ -5074,7 +5091,44 @@ class DitadoLocalApp:
             self.overlay.set_level(self.current_level)
         self._update_wake_listener()
         if not self.closing:
-            self.root.after(50, self._process_events)
+            self.root.after(EVENT_POLL_MS, self._process_events)
+
+    @staticmethod
+    def _raise_process_priority():
+        # Under CPU load a Normal-priority process waits behind everything else
+        # before reacting to Ctrl+Espaço; ABOVE_NORMAL keeps the hotkey responsive.
+        try:
+            # Pseudo-handle -1 is the current process; passed as HANDLE so it is not
+            # truncated to a 32-bit int on 64-bit Python.
+            ctypes.windll.kernel32.SetPriorityClass(
+                ctypes.wintypes.HANDLE(-1), ABOVE_NORMAL_PRIORITY_CLASS
+            )
+        except Exception:
+            pass
+
+    def _keep_hotkey_path_warm(self):
+        """Touch the code the hotkey uses so Windows keeps it in RAM while idle.
+
+        Under memory pressure Windows trims idle working sets; the first Ctrl+Espaço
+        then waits for pages to come back from disk. This also double-checks the
+        microphone list in case a hotplug notification was missed.
+        """
+        if self.closing:
+            return
+        if not self.recording and not self.processing:
+            try:
+                signature = capture_endpoint_signature()
+                watcher = getattr(self, "mic_watcher", None)
+                if watcher is not None and (
+                    signature is None or signature != getattr(self, "audio_endpoint_signature", None)
+                ):
+                    watcher.mark_changed()
+                sd.query_devices()
+                self.playback_mute.endpoint_factory().GetMute()
+                self.desktop.basic_focus()
+            except Exception:
+                pass
+        self.root.after(HOTKEY_WARM_INTERVAL_MS, self._keep_hotkey_path_warm)
 
     def _create_tray_icon(self):
         icon_image = self._load_app_icon()
@@ -5144,6 +5198,8 @@ class DitadoLocalApp:
             self.chat_hotkey.stop()
         self.agent_selection_cancelled.set()
         self._stop_wake_listener()
+        if getattr(self, "mic_watcher", None) is not None:
+            self.mic_watcher.stop()
         if getattr(self, "wake_engine", None) is not None:
             self.wake_engine.close()
         if self.stream is not None:
