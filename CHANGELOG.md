@@ -2,6 +2,16 @@
 
 Todas as alterações relevantes serão documentadas neste arquivo.
 
+## 0.4.19 - 2026-11-24
+
+- O modelo do agente passa a ser liberado do Ollama após 5 minutos sem uso em
+  instalações novas (antes 2 horas). Com o padrão antigo, cada uso do agente
+  mantinha cerca de 6 GB de memória de vídeo e 9 GB de memória reservada presos
+  por duas horas. A primeira resposta depois de uma pausa pode levar alguns
+  segundos a mais, enquanto o modelo é recarregado.
+- Quem já tem o Ditado instalado mantém o valor salvo; para mudar, ajuste
+  `agent_keep_alive` na configuração.
+
 ## 0.4.18 - 2026-11-17
 
 - Ctrl+Espaço não fica mais preso quando a nuvem está inacessível. Cada falha da

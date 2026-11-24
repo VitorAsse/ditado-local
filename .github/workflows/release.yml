@@ -6,7 +6,7 @@ on:
       version:
         description: Version without the v prefix
         required: true
-        default: 0.4.18
+        default: 0.4.19
 
 permissions:
   contents: write
