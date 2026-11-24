@@ -116,7 +116,7 @@ class AppConfig:
         "transcription_vocabulary": [],
         "transcription_compute_type": "float16",
         "agent_model": "qwen3.5:9b",
-        "agent_keep_alive": "2h",
+        "agent_keep_alive": "5m",
         "corrections": [],
         "rules": [],
         "skills": [],

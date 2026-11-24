@@ -428,7 +428,7 @@ def _transformation_system_prompt(skills, selected_skill, rules):
 
 
 class OllamaClient:
-    def __init__(self, model=OLLAMA_MODEL, url=OLLAMA_URL, keep_alive="2h"):
+    def __init__(self, model=OLLAMA_MODEL, url=OLLAMA_URL, keep_alive="5m"):
         self.model = model
         self.url = url
         self.keep_alive = keep_alive

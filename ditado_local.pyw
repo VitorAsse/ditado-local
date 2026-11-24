@@ -499,7 +499,7 @@ class DitadoLocalApp:
         )
         self.ollama = OllamaClient(
             model=os.environ.get("DITADO_OLLAMA_MODEL") or self.config.get("agent_model", OLLAMA_MODEL),
-            keep_alive=self.config.get("agent_keep_alive", "2h"),
+            keep_alive=self.config.get("agent_keep_alive", "5m"),
         )
         self.playback_mute = PlaybackMuteController()
 

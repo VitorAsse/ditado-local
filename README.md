@@ -365,7 +365,7 @@ Variáveis opcionais:
 | `DITADO_OLLAMA_URL` | `http://127.0.0.1:11434/api/chat` | Endpoint compatível com a API de chat do Ollama |
 | `DITADO_OLLAMA_MODEL` | `agent_model` da configuração, inicialmente `qwen3.5:9b` | Modelo local usado para revisão e ações |
 
-`agent_keep_alive` mantém o modelo preparado no Ollama (padrão `2h`). O agente usa
+`agent_keep_alive` mantém o modelo preparado no Ollama (padrão `5m`). O agente usa
 uma geração direta sobre a seleção original, sem substituir a conversa por um resumo
 intermediário. A validação pode pedir uma correção adicional quando detecta uma falha.
 O modo de raciocínio interno fica desativado para reduzir a demora. Em máquinas com
